@@ -1,0 +1,11 @@
+.git
+.gitignore
+.idea
+
+web/.next
+web/node_modules
+web/out
+
+data
+web_dist
+README.md
