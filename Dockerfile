@@ -1,5 +1,4 @@
 ARG BUILDPLATFORM
-ARG TARGETPLATFORM
 ARG TARGETARCH
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
@@ -15,17 +14,16 @@ RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-build
 
-ARG TARGETPLATFORM
 ARG TARGETARCH
 
 WORKDIR /app
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o chatgpt2api .
 
-FROM --platform=$TARGETPLATFORM alpine:3.20 AS app
+FROM alpine:3.20 AS app
 
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata

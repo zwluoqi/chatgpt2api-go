@@ -456,26 +456,15 @@ func (as *AccountService) RefreshAccountState(accessToken string) map[string]any
 }
 
 func (as *AccountService) GetAvailableAccessToken() (string, error) {
-	attempted := make(map[string]bool)
-	for {
-		accessToken, err := as.pickNextCandidateToken(attempted)
-		if err != nil {
-			return "", err
-		}
-		attempted[accessToken] = true
-		account := as.RefreshAccountState(accessToken)
-		if isImageAccountAvailable(account) {
-			return accessToken, nil
-		}
-		quota := "unknown"
-		status := "unknown"
-		if account != nil {
-			quota = fmt.Sprintf("%v", account["quota"])
-			status = fmt.Sprintf("%v", account["status"])
-		}
-		fmt.Printf("[account-available] skip token=%s... quota=%s status=%s\n",
-			accessToken[:min(12, len(accessToken))], quota, status)
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	tokens := as.listAvailableCandidateTokens(nil)
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("no available tokens found in %s", as.storeFile)
 	}
+	accessToken := tokens[as.index%len(tokens)]
+	as.index++
+	return accessToken, nil
 }
 
 func (as *AccountService) NextToken() (string, error) {
