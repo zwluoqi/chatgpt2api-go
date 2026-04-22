@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"chatgpt2api/config"
-	"chatgpt2api/services"
+	"chatgpt2api-go/config"
+	"chatgpt2api-go/services"
 )
 
 func main() {
@@ -52,7 +52,7 @@ func main() {
 	)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	fmt.Printf("chatgpt2api v%s starting on %s\n", appVersion, addr)
+	fmt.Printf("chatgpt2api-go v%s starting on %s\n", appVersion, addr)
 
 	srv := &http.Server{
 		Addr:    addr,

@@ -36,7 +36,7 @@ export type ImageConversation = {
 };
 
 const imageConversationStorage = localforage.createInstance({
-  name: "chatgpt2api",
+  name: "chatgpt2api-go",
   storeName: "image_conversations",
 });
 

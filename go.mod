@@ -1,4 +1,4 @@
-module chatgpt2api
+module chatgpt2api-go
 
 go 1.25.0
 

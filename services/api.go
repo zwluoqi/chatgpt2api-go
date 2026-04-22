@@ -17,7 +17,7 @@ func buildModelItem(modelID string) map[string]any {
 		"id":       modelID,
 		"object":   "model",
 		"created":  0,
-		"owned_by": "chatgpt2api",
+		"owned_by": "chatgpt2api-go",
 	}
 }
 

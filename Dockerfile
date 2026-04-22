@@ -21,15 +21,15 @@ RUN apk add --no-cache git gcc musl-dev
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o chatgpt2api .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o chatgpt2api-go .
 
 FROM alpine:3.20 AS app
 
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
-COPY --from=go-build /app/chatgpt2api .
+COPY --from=go-build /app/chatgpt2api-go .
 COPY --from=web-build /app/web/out ./web_dist
 COPY config.json VERSION ./
 RUN mkdir -p /app/data
 EXPOSE 80
-CMD ["./chatgpt2api"]
+CMD ["./chatgpt2api-go"]

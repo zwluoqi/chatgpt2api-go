@@ -2,10 +2,10 @@
 
 import localforage from "localforage";
 
-export const AUTH_KEY_STORAGE_KEY = "chatgpt2api_auth_key";
+export const AUTH_KEY_STORAGE_KEY = "chatgpt2api-go_auth_key";
 
 const authStorage = localforage.createInstance({
-  name: "chatgpt2api",
+  name: "chatgpt2api-go",
   storeName: "auth",
 });
 
