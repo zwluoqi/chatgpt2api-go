@@ -12,7 +12,7 @@ COPY VERSION /app/VERSION
 COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-build
 
 ARG TARGETARCH
 
