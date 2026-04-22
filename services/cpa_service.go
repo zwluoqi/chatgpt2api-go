@@ -477,7 +477,7 @@ func (s *CPAImportService) runImport(poolID string, pool map[string]any, names [
 		err      error
 	}
 
-	maxWorkers := min(16, max(1, len(names)))
+	maxWorkers := min(64, max(1, len(names)))
 	results := make(chan fetchResult, len(names))
 	sem := make(chan struct{}, maxWorkers)
 

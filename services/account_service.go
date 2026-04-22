@@ -822,7 +822,7 @@ func (as *AccountService) RefreshAccounts(accessTokens []string) map[string]any 
 		return map[string]any{"refreshed": 0, "errors": []any{}, "items": as.ListAccounts()}
 	}
 
-	maxWorkers := min(10, len(cleanedTokens))
+	maxWorkers := min(64, len(cleanedTokens))
 	type refreshResult struct {
 		accessToken string
 		info        map[string]any
