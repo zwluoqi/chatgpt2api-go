@@ -134,6 +134,27 @@ func TestAccountServiceMarkImageResultQuotaExhaust(t *testing.T) {
 	}
 }
 
+func TestAccountServiceMarkImageResultUnknownQuota(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{
+		"quota":               0,
+		"status":              "正常",
+		"image_quota_unknown": true,
+	})
+
+	account := as.MarkImageResult("token_a", true)
+	if account == nil {
+		t.Fatal("MarkImageResult returned nil")
+	}
+	if toInt(account["quota"]) != 0 {
+		t.Errorf("quota = %v, want 0", account["quota"])
+	}
+	if account["status"] != "正常" {
+		t.Errorf("status = %v, want 正常", account["status"])
+	}
+}
+
 func TestAccountServiceListTokens(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_1", "token_2"})
@@ -155,6 +176,19 @@ func TestAccountServiceListLimitedTokens(t *testing.T) {
 	}
 	if limited[0] != "token_1" {
 		t.Errorf("limited[0] = %v, want token_1", limited[0])
+	}
+}
+
+func TestNormalizeAccountImageQuotaUnknown(t *testing.T) {
+	account := normalizeAccount(map[string]any{
+		"access_token":        "test_token",
+		"image_quota_unknown": true,
+	})
+	if account == nil {
+		t.Fatal("normalizeAccount returned nil")
+	}
+	if account["image_quota_unknown"] != true {
+		t.Errorf("image_quota_unknown = %v, want true", account["image_quota_unknown"])
 	}
 }
 
@@ -228,12 +262,15 @@ func TestExtractQuotaAndRestoreAt(t *testing.T) {
 			"reset_after":  "2024-05-01T00:00:00Z",
 		},
 	}
-	quota, restoreAt := extractQuotaAndRestoreAt(limits)
+	quota, restoreAt, unknown := extractQuotaAndRestoreAt(limits)
 	if quota != 42 {
 		t.Errorf("quota = %d, want 42", quota)
 	}
 	if restoreAt == nil || *restoreAt != "2024-05-01T00:00:00Z" {
 		t.Errorf("restoreAt = %v, want 2024-05-01T00:00:00Z", restoreAt)
+	}
+	if unknown {
+		t.Error("unknown = true, want false")
 	}
 }
 
@@ -241,12 +278,15 @@ func TestExtractQuotaNoImageGen(t *testing.T) {
 	limits := []any{
 		map[string]any{"feature_name": "other", "remaining": float64(100)},
 	}
-	quota, restoreAt := extractQuotaAndRestoreAt(limits)
+	quota, restoreAt, unknown := extractQuotaAndRestoreAt(limits)
 	if quota != 0 {
 		t.Errorf("quota = %d, want 0", quota)
 	}
 	if restoreAt != nil {
 		t.Errorf("restoreAt = %v, want nil", restoreAt)
+	}
+	if !unknown {
+		t.Error("unknown = false, want true")
 	}
 }
 

@@ -17,6 +17,8 @@ import (
 var AccountTypeMap = map[string]string{
 	"free":       "Free",
 	"plus":       "Plus",
+	"prolite":    "ProLite",
+	"pro_lite":   "ProLite",
 	"team":       "Team",
 	"pro":        "Pro",
 	"personal":   "Plus",
@@ -72,8 +74,12 @@ func isImageAccountAvailable(account map[string]any) bool {
 	if account == nil {
 		return false
 	}
-	if fmt.Sprintf("%v", account["status"]) == "禁用" {
+	status := fmt.Sprintf("%v", account["status"])
+	if status == "禁用" || status == "限流" || status == "异常" {
 		return false
+	}
+	if imageQuotaUnknown, ok := account["image_quota_unknown"].(bool); ok && imageQuotaUnknown {
+		return true
 	}
 	quota := toInt(account["quota"])
 	return quota > 0
@@ -215,6 +221,11 @@ func normalizeAccount(item map[string]any) map[string]any {
 		quota = 0
 	}
 	normalized["quota"] = quota
+	if imageQuotaUnknown, ok := normalized["image_quota_unknown"].(bool); ok {
+		normalized["image_quota_unknown"] = imageQuotaUnknown
+	} else {
+		normalized["image_quota_unknown"] = false
+	}
 
 	email := cleanToken(normalized["email"])
 	if email == "" {
@@ -252,7 +263,7 @@ func normalizeAccount(item map[string]any) map[string]any {
 	return normalized
 }
 
-func extractQuotaAndRestoreAt(limitsProgress []any) (int, *string) {
+func extractQuotaAndRestoreAt(limitsProgress []any) (int, *string, bool) {
 	for _, item := range limitsProgress {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -264,11 +275,11 @@ func extractQuotaAndRestoreAt(limitsProgress []any) (int, *string) {
 		quota := toInt(m["remaining"])
 		restoreAt := cleanToken(m["reset_after"])
 		if restoreAt == "" {
-			return quota, nil
+			return quota, nil, false
 		}
-		return quota, &restoreAt
+		return quota, &restoreAt, false
 	}
-	return 0, nil
+	return 0, nil, true
 }
 
 func (as *AccountService) loadAccounts() []map[string]any {
@@ -328,19 +339,19 @@ func (as *AccountService) buildRemoteHeaders(accessToken string) (map[string]str
 	}
 
 	headers := map[string]string{
-		"authorization":    fmt.Sprintf("Bearer %s", accessToken),
-		"accept":           "*/*",
-		"accept-language":  "zh-CN,zh;q=0.9,en;q=0.8",
-		"content-type":     "application/json",
-		"oai-language":     "zh-CN",
-		"origin":           "https://chatgpt.com",
-		"referer":          "https://chatgpt.com/",
-		"sec-fetch-dest":   "empty",
-		"sec-fetch-mode":   "cors",
-		"sec-fetch-site":   "same-origin",
-		"user-agent":       userAgent,
-		"sec-ch-ua":        secChUa,
-		"sec-ch-ua-mobile": secChUaMobile,
+		"authorization":      fmt.Sprintf("Bearer %s", accessToken),
+		"accept":             "*/*",
+		"accept-language":    "zh-CN,zh;q=0.9,en;q=0.8",
+		"content-type":       "application/json",
+		"oai-language":       "zh-CN",
+		"origin":             "https://chatgpt.com",
+		"referer":            "https://chatgpt.com/",
+		"sec-fetch-dest":     "empty",
+		"sec-fetch-mode":     "cors",
+		"sec-fetch-site":     "same-origin",
+		"user-agent":         userAgent,
+		"sec-ch-ua":          secChUa,
+		"sec-ch-ua-mobile":   secChUaMobile,
 		"sec-ch-ua-platform": secChUaPlatform,
 	}
 
@@ -379,6 +390,7 @@ func (as *AccountService) publicItems(accounts []map[string]any) []map[string]an
 			"type":               account["type"],
 			"status":             account["status"],
 			"quota":              toInt(account["quota"]),
+			"imageQuotaUnknown":  account["image_quota_unknown"],
 			"email":              account["email"],
 			"user_id":            account["user_id"],
 			"limits_progress":    account["limits_progress"],
@@ -660,16 +672,21 @@ func (as *AccountService) MarkImageResult(accessToken string, success bool) map[
 		nextItem[k] = v
 	}
 	nextItem["last_used_at"] = time.Now().Format("2006-01-02 15:04:05")
+	imageQuotaUnknown, _ := nextItem["image_quota_unknown"].(bool)
 
 	if success {
 		nextItem["success"] = toInt(nextItem["success"]) + 1
-		quota := toInt(nextItem["quota"]) - 1
-		if quota < 0 {
-			quota = 0
-		}
-		nextItem["quota"] = quota
-		if quota == 0 {
-			nextItem["status"] = "限流"
+		if !imageQuotaUnknown {
+			quota := toInt(nextItem["quota"]) - 1
+			if quota < 0 {
+				quota = 0
+			}
+			nextItem["quota"] = quota
+			if quota == 0 {
+				nextItem["status"] = "限流"
+			} else if fmt.Sprintf("%v", nextItem["status"]) == "限流" {
+				nextItem["status"] = "正常"
+			}
 		} else if fmt.Sprintf("%v", nextItem["status"]) == "限流" {
 			nextItem["status"] = "正常"
 		}
@@ -781,20 +798,22 @@ func (as *AccountService) FetchRemoteInfo(accessToken string) (map[string]any, e
 		limitsProgress = []any{}
 	}
 
-	quota, restoreAt := extractQuotaAndRestoreAt(limitsProgress)
+	accountType := as.detectAccountType(accessToken, mePayload, initPayload)
+	quota, restoreAt, imageQuotaUnknown := extractQuotaAndRestoreAt(limitsProgress)
 	status := "正常"
-	if quota == 0 {
+	if !(imageQuotaUnknown && accountType != "Free") && quota == 0 {
 		status = "限流"
 	}
 
 	info := map[string]any{
-		"email":              mePayload["email"],
-		"user_id":            mePayload["id"],
-		"type":               as.detectAccountType(accessToken, mePayload, initPayload),
-		"quota":              quota,
-		"limits_progress":    limitsProgress,
-		"default_model_slug": initPayload["default_model_slug"],
-		"status":             status,
+		"email":               mePayload["email"],
+		"user_id":             mePayload["id"],
+		"type":                accountType,
+		"quota":               quota,
+		"image_quota_unknown": imageQuotaUnknown,
+		"limits_progress":     limitsProgress,
+		"default_model_slug":  initPayload["default_model_slug"],
+		"status":              status,
 	}
 	if restoreAt != nil {
 		info["restore_at"] = *restoreAt

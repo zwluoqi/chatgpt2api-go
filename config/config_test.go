@@ -25,6 +25,9 @@ func TestLoadSettingsFromFile(t *testing.T) {
 	if cfg.ProxyURL != "http://127.0.0.1:7890" {
 		t.Errorf("ProxyURL = %q, want http://127.0.0.1:7890", cfg.ProxyURL)
 	}
+	if !cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = false, want true")
+	}
 	if cfg.Host != "0.0.0.0" {
 		t.Errorf("Host = %q, want 0.0.0.0", cfg.Host)
 	}
@@ -50,6 +53,9 @@ func TestLoadSettingsEnvOverride(t *testing.T) {
 	}
 	if cfg.ProxyURL != "socks5://127.0.0.1:1080" {
 		t.Errorf("ProxyURL = %q, want socks5://127.0.0.1:1080 (env should override file)", cfg.ProxyURL)
+	}
+	if !cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = false, want true")
 	}
 }
 
@@ -79,6 +85,9 @@ func TestLoadSettingsDefaultRefreshInterval(t *testing.T) {
 	if cfg.RefreshAccountIntervalMinute != 60 {
 		t.Errorf("RefreshAccountIntervalMinute = %d, want 60 (default)", cfg.RefreshAccountIntervalMinute)
 	}
+	if !cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = false, want true")
+	}
 }
 
 func TestLoadSettingsNoConfigFile(t *testing.T) {
@@ -96,6 +105,9 @@ func TestLoadSettingsNoConfigFile(t *testing.T) {
 	}
 	if cfg.ProxyURL != "https://127.0.0.1:8443" {
 		t.Errorf("ProxyURL = %q, want https://127.0.0.1:8443", cfg.ProxyURL)
+	}
+	if !cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = false, want true")
 	}
 }
 
@@ -129,5 +141,35 @@ func TestLoadSettingsInvalidProxyURL(t *testing.T) {
 	}
 	if got := err.Error(); got == "" || !strings.Contains(got, "invalid proxy-url") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadSettingsChatCompletionsOverride(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key": "test", "enable-chat-completions": false}`), 0o644)
+
+	cfg, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = true, want false")
+	}
+}
+
+func TestLoadSettingsChatCompletionsEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key": "test", "enable-chat-completions": false}`), 0o644)
+
+	t.Setenv("CHATGPT2API_ENABLE_CHAT_COMPLETIONS", "true")
+
+	cfg, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ChatCompletionsEnabled {
+		t.Error("ChatCompletionsEnabled = false, want true")
 	}
 }

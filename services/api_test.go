@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"chatgpt2api-go/config"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,11 +16,31 @@ func setupTestApp(t *testing.T) (*httptest.Server, string) {
 	dir := t.TempDir()
 	storeFile := filepath.Join(dir, "accounts.json")
 	cpaFile := filepath.Join(dir, "cpa_config.json")
+	configFile := filepath.Join(dir, "config.json")
+	dataDir := filepath.Join(dir, "data")
 	webDistDir := filepath.Join(dir, "web_dist")
+	os.MkdirAll(dataDir, 0o755)
 	os.MkdirAll(webDistDir, 0o755)
 	os.WriteFile(filepath.Join(webDistDir, "index.html"), []byte("<html>test</html>"), 0o644)
+	os.WriteFile(configFile, []byte("{\n  \"auth-key\": \"test-auth-key\"\n}\n"), 0o644)
 
 	authKey := "test-auth-key"
+	prevConfig := config.Config
+	config.Config = &config.AppSettings{
+		AuthKey:                      authKey,
+		Host:                         "0.0.0.0",
+		Port:                         8000,
+		ChatCompletionsEnabled:       true,
+		ConfigFile:                   configFile,
+		AccountsFile:                 storeFile,
+		RefreshAccountIntervalMinute: 60,
+		BaseDir:                      dir,
+		DataDir:                      dataDir,
+	}
+	t.Cleanup(func() {
+		config.Config = prevConfig
+	})
+
 	accountService := NewAccountService(storeFile)
 	cpaConfig := NewCPAConfig(cpaFile)
 	cpaImportService := NewCPAImportService(cpaConfig, accountService)
@@ -114,6 +135,171 @@ func TestListModels(t *testing.T) {
 	data, ok := body["data"].([]any)
 	if !ok || len(data) != 2 {
 		t.Errorf("expected 2 models")
+	}
+}
+
+func TestProxySettingsCRUD(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+	client := &http.Client{}
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/proxy", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getBody map[string]any
+	json.NewDecoder(resp.Body).Decode(&getBody)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	proxy, _ := getBody["proxy"].(map[string]any)
+	if proxy["enabled"] != false {
+		t.Fatalf("enabled = %v, want false", proxy["enabled"])
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{
+		"enabled": true,
+		"url":     "http://127.0.0.1:7890",
+	})
+	req, _ = http.NewRequest("POST", srv.URL+"/api/proxy", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updateResp map[string]any
+	json.NewDecoder(resp.Body).Decode(&updateResp)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	proxy, _ = updateResp["proxy"].(map[string]any)
+	if proxy["url"] != "http://127.0.0.1:7890" {
+		t.Fatalf("url = %v, want http://127.0.0.1:7890", proxy["url"])
+	}
+
+	req, _ = http.NewRequest("GET", srv.URL+"/api/proxy", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(resp.Body).Decode(&getBody)
+	resp.Body.Close()
+	proxy, _ = getBody["proxy"].(map[string]any)
+	if proxy["enabled"] != true {
+		t.Fatalf("enabled = %v, want true", proxy["enabled"])
+	}
+	if proxy["url"] != "http://127.0.0.1:7890" {
+		t.Fatalf("url = %v, want http://127.0.0.1:7890", proxy["url"])
+	}
+}
+
+func TestProxySettingsInvalidURL(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{"enabled": true, "url": "127.0.0.1:7890"})
+	req, _ := http.NewRequest("POST", srv.URL+"/api/proxy", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestProxyTestRequiresURL(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]any{"url": ""})
+	req, _ := http.NewRequest("POST", srv.URL+"/api/proxy/test", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestChatCompletionsSettingsCRUD(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+	client := &http.Client{}
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/chat-completions", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getBody map[string]any
+	json.NewDecoder(resp.Body).Decode(&getBody)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if getBody["enabled"] != true {
+		t.Fatalf("enabled = %v, want true", getBody["enabled"])
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{"enabled": false})
+	req, _ = http.NewRequest("POST", srv.URL+"/api/chat-completions", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updateResp map[string]any
+	json.NewDecoder(resp.Body).Decode(&updateResp)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if updateResp["enabled"] != false {
+		t.Fatalf("enabled = %v, want false", updateResp["enabled"])
+	}
+}
+
+func TestChatCompletionsDisabled(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	updateBody, _ := json.Marshal(map[string]any{"enabled": false})
+	req, _ := http.NewRequest("POST", srv.URL+"/api/chat-completions", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	body, _ := json.Marshal(map[string]any{"model": "gpt-image-1", "messages": []any{}})
+	req, _ = http.NewRequest("POST", srv.URL+"/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
 }
 

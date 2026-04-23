@@ -47,6 +47,14 @@ type TLSClient struct {
 }
 
 func NewTLSClient() (*TLSClient, error) {
+	return newTLSClient("")
+}
+
+func NewTLSClientWithProxyURL(proxyURL string) (*TLSClient, error) {
+	return newTLSClient(strings.TrimSpace(proxyURL))
+}
+
+func newTLSClient(proxyURL string) (*TLSClient, error) {
 	profile := tlsProfiles[rand.Intn(len(tlsProfiles))]
 	ua := defaultUserAgents[rand.Intn(len(defaultUserAgents))]
 
@@ -57,7 +65,10 @@ func NewTLSClient() (*TLSClient, error) {
 		tls_client.WithCookieJar(jar),
 		tls_client.WithRandomTLSExtensionOrder(),
 	}
-	if proxyURL := getConfiguredProxyURL(); proxyURL != "" {
+	if proxyURL == "" {
+		proxyURL = getConfiguredProxyURL()
+	}
+	if proxyURL != "" {
 		options = append(options, tls_client.WithProxyUrl(proxyURL))
 	}
 

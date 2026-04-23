@@ -1,6 +1,6 @@
 import { httpRequest } from "@/lib/request";
 
-export type AccountType = "Free" | "Plus" | "Pro" | "Team";
+export type AccountType = "Free" | "Plus" | "ProLite" | "Pro" | "Team";
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = "gpt-image-1" | "gpt-image-2";
 
@@ -10,6 +10,7 @@ export type Account = {
   type: AccountType;
   status: AccountStatus;
   quota: number;
+  imageQuotaUnknown?: boolean;
   email?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
@@ -46,6 +47,22 @@ type AccountRefreshResponse = {
 type AccountUpdateResponse = {
   item: Account;
   items: Account[];
+};
+
+export type ProxySettings = {
+  enabled: boolean;
+  url: string;
+};
+
+export type ProxyTestResult = {
+  ok: boolean;
+  status: number;
+  latency_ms: number;
+  error: string | null;
+};
+
+export type ChatCompletionsSettings = {
+  enabled: boolean;
 };
 
 export async function login(authKey: string) {
@@ -135,6 +152,35 @@ export async function editImage(files: File | File[], prompt: string, model: Ima
       body: formData,
     },
   );
+}
+
+export async function fetchProxy() {
+  return httpRequest<{ proxy: ProxySettings }>("/api/proxy");
+}
+
+export async function updateProxy(updates: { enabled?: boolean; url?: string }) {
+  return httpRequest<{ proxy: ProxySettings }>("/api/proxy", {
+    method: "POST",
+    body: updates,
+  });
+}
+
+export async function testProxy(url?: string) {
+  return httpRequest<{ result: ProxyTestResult }>("/api/proxy/test", {
+    method: "POST",
+    body: { url: url ?? "" },
+  });
+}
+
+export async function fetchChatCompletionsSettings() {
+  return httpRequest<ChatCompletionsSettings>("/api/chat-completions");
+}
+
+export async function updateChatCompletionsSettings(enabled: boolean) {
+  return httpRequest<ChatCompletionsSettings>("/api/chat-completions", {
+    method: "POST",
+    body: { enabled },
+  });
 }
 
 // ── CPA (CLIProxyAPI) ──────────────────────────────────────────────

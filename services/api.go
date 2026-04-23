@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"chatgpt2api-go/config"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -167,6 +169,80 @@ func CreateApp(
 		c.JSON(200, gin.H{"version": appVersion})
 	})
 
+	r.GET("/api/proxy", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		c.JSON(200, gin.H{"proxy": GetProxySettings()})
+	})
+
+	r.POST("/api/proxy", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		var body struct {
+			Enabled *bool  `json:"enabled"`
+			URL     string `json:"url"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request body"})
+			return
+		}
+		proxy, err := UpdateProxySettings(body.Enabled, body.URL)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"proxy": proxy})
+	})
+
+	r.POST("/api/proxy/test", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request body"})
+			return
+		}
+		candidate := strings.TrimSpace(body.URL)
+		if candidate == "" {
+			candidate = GetProxySettings().URL
+		}
+		if candidate == "" {
+			c.JSON(400, gin.H{"error": "proxy url is required"})
+			return
+		}
+		c.JSON(200, gin.H{"result": TestProxy(candidate, 15*time.Second)})
+	})
+
+	r.GET("/api/chat-completions", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		c.JSON(200, gin.H{"enabled": config.GetChatCompletionsEnabled()})
+	})
+
+	r.POST("/api/chat-completions", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request body"})
+			return
+		}
+		if err := config.UpdateChatCompletionsEnabled(body.Enabled); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"enabled": config.GetChatCompletionsEnabled()})
+	})
+
 	r.GET("/api/accounts", func(c *gin.Context) {
 		if !requireAuthKey(c, authKey) {
 			return
@@ -310,11 +386,11 @@ func CreateApp(
 			return
 		}
 		var body struct {
-			Prompt         string `json:"prompt" binding:"required,min=1"`
-			Model          string `json:"model"`
-			N              int    `json:"n"`
-			ResponseFormat string `json:"response_format"`
-			HistoryDisabled bool  `json:"history_disabled"`
+			Prompt          string `json:"prompt" binding:"required,min=1"`
+			Model           string `json:"model"`
+			N               int    `json:"n"`
+			ResponseFormat  string `json:"response_format"`
+			HistoryDisabled bool   `json:"history_disabled"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": "prompt is required"})
@@ -410,6 +486,10 @@ func CreateApp(
 
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		if !requireAuthKey(c, authKey) {
+			return
+		}
+		if !config.GetChatCompletionsEnabled() {
+			c.JSON(403, gin.H{"error": "/v1/chat/completions is disabled"})
 			return
 		}
 		var body map[string]any
