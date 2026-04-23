@@ -3,6 +3,11 @@ package services
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	neturl "net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -131,6 +136,18 @@ func extractPromptFromMessageContent(content any) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
+func MergePromptWithSize(prompt, size string) string {
+	prompt = strings.TrimSpace(prompt)
+	size = strings.TrimSpace(size)
+	if size == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return fmt.Sprintf("Requested output image size: %s.", size)
+	}
+	return fmt.Sprintf("%s\n\nRequested output image size: %s.", prompt, size)
+}
+
 func buildRequestImage(data []byte, mime string, index int) RequestImage {
 	if mime == "" {
 		mime = "image/png"
@@ -140,6 +157,90 @@ func buildRequestImage(data []byte, mime string, index int) RequestImage {
 		FileName: fmt.Sprintf("image_%d.png", index),
 		MimeType: mime,
 	}
+}
+
+func buildNamedRequestImage(data []byte, mimeType, fileName string, index int) RequestImage {
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if mimeType == "" || !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		mimeType = "image/png"
+	}
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		exts, _ := mime.ExtensionsByType(mimeType)
+		ext := ".png"
+		if len(exts) > 0 && strings.TrimSpace(exts[0]) != "" {
+			ext = exts[0]
+		}
+		fileName = fmt.Sprintf("image_%d%s", index, ext)
+	}
+	return RequestImage{
+		Data:     data,
+		FileName: fileName,
+		MimeType: mimeType,
+	}
+}
+
+func extractImageURLValue(raw any) string {
+	if raw == nil {
+		return ""
+	}
+	if m, ok := raw.(map[string]any); ok {
+		return strings.TrimSpace(fmt.Sprintf("%v", m["url"]))
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", raw))
+}
+
+func downloadRemoteImage(urlStr string, index int) (RequestImage, error) {
+	parsed, err := neturl.Parse(strings.TrimSpace(urlStr))
+	if err != nil {
+		return RequestImage{}, fmt.Errorf("invalid image url")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return RequestImage{}, fmt.Errorf("unsupported image url scheme")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return RequestImage{}, fmt.Errorf("invalid image url")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return RequestImage{}, fmt.Errorf("download image failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return RequestImage{}, fmt.Errorf("download image failed: status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		return RequestImage{}, fmt.Errorf("download image failed")
+	}
+	if len(data) == 0 {
+		return RequestImage{}, fmt.Errorf("download image failed")
+	}
+
+	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if idx := strings.Index(mimeType, ";"); idx >= 0 {
+		mimeType = strings.TrimSpace(mimeType[:idx])
+	}
+	if mimeType == "" || !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return RequestImage{}, fmt.Errorf("image url did not return image content")
+	}
+
+	fileName := path.Base(parsed.Path)
+	if fileName == "." || fileName == "/" {
+		fileName = ""
+	}
+
+	return buildNamedRequestImage(data, mimeType, fileName, index), nil
 }
 
 func ExtractImagesFromMessageContent(content any) []RequestImage {
@@ -184,6 +285,49 @@ func ExtractImagesFromMessageContent(content any) []RequestImage {
 		}
 	}
 	return images
+}
+
+func ResolveImagesFromMessageContent(content any) ([]RequestImage, error) {
+	items, ok := content.([]any)
+	if !ok {
+		return nil, nil
+	}
+
+	var images []RequestImage
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType := strings.TrimSpace(fmt.Sprintf("%v", m["type"]))
+		var imageURL string
+		if itemType == "image_url" {
+			urlObj := m["image_url"]
+			if urlObj == nil {
+				urlObj = m
+			}
+			imageURL = extractImageURLValue(urlObj)
+		}
+		if itemType == "input_image" {
+			imageURL = extractImageURLValue(m["image_url"])
+		}
+		if imageURL == "" {
+			continue
+		}
+		if strings.HasPrefix(imageURL, "data:") {
+			data, mimeType := parseDataURL(imageURL)
+			if data != nil {
+				images = append(images, buildNamedRequestImage(data, mimeType, "", len(images)+1))
+			}
+			continue
+		}
+		image, err := downloadRemoteImage(imageURL, len(images)+1)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, image)
+	}
+	return images, nil
 }
 
 func ExtractImageFromMessageContent(content any) ([]byte, string, bool) {
@@ -235,6 +379,31 @@ func ExtractChatImages(body map[string]any) []RequestImage {
 		}
 	}
 	return nil
+}
+
+func ResolveChatImages(body map[string]any) ([]RequestImage, error) {
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		return nil, nil
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg, ok := messages[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		role := strings.TrimSpace(strings.ToLower(fmt.Sprintf("%v", msg["role"])))
+		if role != "user" {
+			continue
+		}
+		images, err := ResolveImagesFromMessageContent(msg["content"])
+		if err != nil {
+			return nil, err
+		}
+		if len(images) > 0 {
+			return images, nil
+		}
+	}
+	return nil, nil
 }
 
 func ExtractChatImage(body map[string]any) ([]byte, string, bool) {

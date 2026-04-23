@@ -67,6 +67,36 @@ func requireAuthKey(c *gin.Context, authKey string) bool {
 	return true
 }
 
+func summarizeImageChatRequest(body map[string]any) string {
+	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+	n := strings.TrimSpace(fmt.Sprintf("%v", body["n"]))
+	stream := strings.TrimSpace(fmt.Sprintf("%v", body["stream"]))
+
+	messageCount := 0
+	if messages, ok := body["messages"].([]any); ok {
+		messageCount = len(messages)
+	}
+	imageCount := len(ExtractChatImages(body))
+	promptPresent := ExtractChatPrompt(body) != ""
+
+	return fmt.Sprintf("model=%q n=%q stream=%q messages=%d images=%d prompt=%t",
+		model, n, stream, messageCount, imageCount, promptPresent)
+}
+
+func summarizeResponseRequest(body map[string]any) string {
+	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+	stream := strings.TrimSpace(fmt.Sprintf("%v", body["stream"]))
+	inputItems := 0
+	if items, ok := body["input"].([]any); ok {
+		inputItems = len(items)
+	}
+	imageCount := len(extractResponseImages(body["input"]))
+	promptPresent := ExtractResponsePrompt(body["input"]) != ""
+
+	return fmt.Sprintf("model=%q stream=%q input_items=%d images=%d prompt=%t",
+		model, stream, inputItems, imageCount, promptPresent)
+}
+
 func resolveWebAsset(webDistDir, requestedPath string) string {
 	if _, err := os.Stat(webDistDir); os.IsNotExist(err) {
 		return ""
@@ -389,6 +419,7 @@ func CreateApp(
 			Prompt          string `json:"prompt" binding:"required,min=1"`
 			Model           string `json:"model"`
 			N               int    `json:"n"`
+			Size            string `json:"size"`
 			ResponseFormat  string `json:"response_format"`
 			HistoryDisabled bool   `json:"history_disabled"`
 		}
@@ -406,7 +437,8 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
-		result, err := chatGPTService.GenerateWithPool(body.Prompt, body.Model, body.N)
+		prompt := MergePromptWithSize(body.Prompt, body.Size)
+		result, err := chatGPTService.GenerateWithPool(prompt, body.Model, body.N)
 		if err != nil {
 			c.JSON(502, gin.H{"error": err.Error()})
 			return
@@ -419,6 +451,7 @@ func CreateApp(
 			return
 		}
 		prompt := c.PostForm("prompt")
+		size := c.PostForm("size")
 		model := c.PostForm("model")
 		if model == "" {
 			model = "gpt-image-1"
@@ -432,6 +465,7 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
+		prompt = MergePromptWithSize(prompt, size)
 
 		form, err := c.MultipartForm()
 		if err != nil {
@@ -494,11 +528,14 @@ func CreateApp(
 		}
 		var body map[string]any
 		if err := c.ShouldBindJSON(&body); err != nil {
+			fmt.Printf("[chat-completions] reject invalid body err=%v\n", err)
 			c.JSON(400, gin.H{"error": "invalid request body"})
 			return
 		}
 		result, httpErr := chatGPTService.CreateImageCompletion(body)
 		if httpErr != nil {
+			fmt.Printf("[chat-completions] reject status=%d error=%s %s\n",
+				httpErr.StatusCode, httpErr.Error(), summarizeImageChatRequest(body))
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}
@@ -511,11 +548,14 @@ func CreateApp(
 		}
 		var body map[string]any
 		if err := c.ShouldBindJSON(&body); err != nil {
+			fmt.Printf("[responses] reject invalid body err=%v\n", err)
 			c.JSON(400, gin.H{"error": "invalid request body"})
 			return
 		}
 		result, httpErr := chatGPTService.CreateResponse(body)
 		if httpErr != nil {
+			fmt.Printf("[responses] reject status=%d error=%s %s\n",
+				httpErr.StatusCode, httpErr.Error(), summarizeResponseRequest(body))
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}

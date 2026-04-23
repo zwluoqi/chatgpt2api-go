@@ -233,6 +233,42 @@ func extractResponseImages(inputValue any) []RequestImage {
 	return images
 }
 
+func resolveResponseImages(inputValue any) ([]RequestImage, error) {
+	if m, ok := inputValue.(map[string]any); ok {
+		return ResolveImagesFromMessageContent(m["content"])
+	}
+	items, ok := inputValue.([]any)
+	if !ok {
+		return nil, nil
+	}
+	var images []RequestImage
+	for i := len(items) - 1; i >= 0; i-- {
+		m, ok := items[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprintf("%v", m["type"])) == "input_image" {
+			extracted, err := ResolveImagesFromMessageContent([]any{m})
+			if err != nil {
+				return nil, err
+			}
+			if len(extracted) > 0 {
+				images = append(extracted, images...)
+			}
+		}
+		if content, ok := m["content"]; ok {
+			extracted, err := ResolveImagesFromMessageContent(content)
+			if err != nil {
+				return nil, err
+			}
+			if len(extracted) > 0 {
+				images = append(extracted, images...)
+			}
+		}
+	}
+	return images, nil
+}
+
 type HTTPError struct {
 	StatusCode int
 	Detail     map[string]any
@@ -274,8 +310,12 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 	if prompt == "" {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "prompt is required"}}
 	}
+	prompt = MergePromptWithSize(prompt, fmt.Sprintf("%v", body["size"]))
 
-	images := ExtractChatImages(body)
+	images, resolveErr := ResolveChatImages(body)
+	if resolveErr != nil {
+		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": resolveErr.Error()}}
+	}
 	if len(images) > MaxEditInputImages {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}}
 	}
@@ -312,8 +352,12 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 	if prompt == "" {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "input text is required"}}
 	}
+	prompt = MergePromptWithSize(prompt, fmt.Sprintf("%v", body["size"]))
 
-	images := extractResponseImages(body["input"])
+	images, resolveErr := resolveResponseImages(body["input"])
+	if resolveErr != nil {
+		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": resolveErr.Error()}}
+	}
 	if len(images) > MaxEditInputImages {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}}
 	}

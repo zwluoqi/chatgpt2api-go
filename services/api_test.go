@@ -507,6 +507,106 @@ func TestImageGenerationQuotaExceededMarksAccountLimited(t *testing.T) {
 	}
 }
 
+func TestImageGenerationAppendsSizeToPrompt(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		expected := "draw a cat\n\nRequested output image size: 1024x1024."
+		if prompt != expected {
+			t.Fatalf("prompt = %q, want %q", prompt, expected)
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "draw a cat",
+		"model":  "gpt-image-1",
+		"size":   "1024x1024",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestImageEditAppendsSizeToPrompt(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previous := editImageResultFunc
+	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
+		expected := "edit this\n\nRequested output image size: 1536x1024."
+		if prompt != expected {
+			t.Fatalf("prompt = %q, want %q", prompt, expected)
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		editImageResultFunc = previous
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "edit this"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("size", "1536x1024"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("image", "image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/edits", &body)
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestImageEditsRejectsMoreThan16InputImages(t *testing.T) {
 	srv, authKey := setupTestApp(t)
 	defer srv.Close()

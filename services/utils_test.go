@@ -1,6 +1,8 @@
 package services
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -360,5 +362,75 @@ func TestExtractChatImages(t *testing.T) {
 	}
 	if string(images[1].Data) != "test2" {
 		t.Fatalf("images[1].Data = %q, want test2", string(images[1].Data))
+	}
+}
+
+func TestMergePromptWithSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		prompt   string
+		size     string
+		expected string
+	}{
+		{
+			name:     "appends size to prompt",
+			prompt:   "draw a cat",
+			size:     "1024x1024",
+			expected: "draw a cat\n\nRequested output image size: 1024x1024.",
+		},
+		{
+			name:     "returns prompt when size is empty",
+			prompt:   "draw a cat",
+			size:     "",
+			expected: "draw a cat",
+		},
+		{
+			name:     "size only",
+			prompt:   "",
+			size:     "1536x1024",
+			expected: "Requested output image size: 1536x1024.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MergePromptWithSize(tt.prompt, tt.size); got != tt.expected {
+				t.Fatalf("MergePromptWithSize() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestResolveImagesFromMessageContentRemoteURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("test-remote-image"))
+	}))
+	defer srv.Close()
+
+	content := []any{
+		map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": srv.URL + "/image.png",
+			},
+		},
+	}
+
+	images, err := ResolveImagesFromMessageContent(content)
+	if err != nil {
+		t.Fatalf("ResolveImagesFromMessageContent returned error: %v", err)
+	}
+	if len(images) != 1 {
+		t.Fatalf("len(images) = %d, want 1", len(images))
+	}
+	if string(images[0].Data) != "test-remote-image" {
+		t.Fatalf("images[0].Data = %q, want test-remote-image", string(images[0].Data))
+	}
+	if images[0].MimeType != "image/png" {
+		t.Fatalf("images[0].MimeType = %q, want image/png", images[0].MimeType)
+	}
+	if images[0].FileName != "image.png" {
+		t.Fatalf("images[0].FileName = %q, want image.png", images[0].FileName)
 	}
 }

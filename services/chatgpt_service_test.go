@@ -1,6 +1,8 @@
 package services
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -216,5 +218,111 @@ func TestCreateResponseUsesAllInputImages(t *testing.T) {
 	output, ok := result["output"].([]any)
 	if !ok || len(output) != 1 {
 		t.Fatalf("len(output) = %d, want 1", len(output))
+	}
+}
+
+func TestCreateImageCompletionAppendsSizeToPrompt(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		expected := "draw a cat\n\nRequested output image size: 1024x1024."
+		if prompt != expected {
+			t.Fatalf("prompt = %q, want %q", prompt, expected)
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	svc := NewChatGPTService(as)
+	body := map[string]any{
+		"model": "gpt-image-1",
+		"size":  "1024x1024",
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "draw a cat"},
+				},
+			},
+		},
+	}
+
+	result, httpErr := svc.CreateImageCompletion(body)
+	if httpErr != nil {
+		t.Fatalf("CreateImageCompletion returned error: %v", httpErr)
+	}
+	if result["object"] != "chat.completion" {
+		t.Fatalf("object = %v, want chat.completion", result["object"])
+	}
+}
+
+func TestCreateImageCompletionDownloadsRemoteImageURL(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("remote-image-data"))
+	}))
+	defer imageServer.Close()
+
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previous := editImageResultFunc
+	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
+		if len(images) != 1 {
+			t.Fatalf("len(images) = %d, want 1", len(images))
+		}
+		if string(images[0].Data) != "remote-image-data" {
+			t.Fatalf("images[0].Data = %q, want remote-image-data", string(images[0].Data))
+		}
+		if images[0].MimeType != "image/png" {
+			t.Fatalf("images[0].MimeType = %q, want image/png", images[0].MimeType)
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		editImageResultFunc = previous
+	})
+
+	svc := NewChatGPTService(as)
+	body := map[string]any{
+		"model": "gpt-image-1",
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "edit this"},
+					map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": imageServer.URL + "/image.png",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, httpErr := svc.CreateImageCompletion(body)
+	if httpErr != nil {
+		t.Fatalf("CreateImageCompletion returned error: %v", httpErr)
+	}
+	if result["object"] != "chat.completion" {
+		t.Fatalf("object = %v, want chat.completion", result["object"])
 	}
 }
