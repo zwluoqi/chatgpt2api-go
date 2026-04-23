@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 type AppSettings struct {
 	AuthKey                      string
+	ProxyURL                     string
 	Host                         string
 	Port                         int
 	AccountsFile                 string
@@ -65,6 +67,24 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		)
 	}
 
+	proxyURL := strings.TrimSpace(os.Getenv("CHATGPT2API_PROXY_URL"))
+	if proxyURL == "" {
+		if v, ok := rawConfig["proxy-url"]; ok {
+			proxyURL = strings.TrimSpace(fmt.Sprintf("%v", v))
+		}
+	}
+	if proxyURL != "" {
+		if err := validateProxyURL(proxyURL); err != nil {
+			return nil, fmt.Errorf(
+				"invalid proxy-url: %w\n"+
+					"Please set it via:\n"+
+					"1. Environment variable: CHATGPT2API_PROXY_URL=http://host:port\n"+
+					"2. Or in config.json: \"proxy-url\": \"http://host:port\"",
+				err,
+			)
+		}
+	}
+
 	refreshInterval := 60
 	if v, ok := rawConfig["refresh_account_interval_minute"]; ok {
 		switch val := v.(type) {
@@ -77,6 +97,7 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 
 	return &AppSettings{
 		AuthKey:                      authKey,
+		ProxyURL:                     proxyURL,
 		Host:                         "0.0.0.0",
 		Port:                         8000,
 		AccountsFile:                 filepath.Join(dataDir, "accounts.json"),
@@ -84,4 +105,23 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		BaseDir:                      baseDir,
 		DataDir:                      dataDir,
 	}, nil
+}
+
+func validateProxyURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme == "" {
+		return fmt.Errorf("scheme is required")
+	}
+	switch parsed.Scheme {
+	case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
+	default:
+		return fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("host is required")
+	}
+	return nil
 }

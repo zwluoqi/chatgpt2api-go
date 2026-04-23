@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"strings"
 
+	"chatgpt2api-go/config"
+
 	fhttp "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	tls_profiles "github.com/bogdanfinn/tls-client/profiles"
@@ -54,6 +56,9 @@ func NewTLSClient() (*TLSClient, error) {
 		tls_client.WithTimeoutSeconds(30),
 		tls_client.WithCookieJar(jar),
 		tls_client.WithRandomTLSExtensionOrder(),
+	}
+	if proxyURL := getConfiguredProxyURL(); proxyURL != "" {
+		options = append(options, tls_client.WithProxyUrl(proxyURL))
 	}
 
 	c, err := tls_client.NewHttpClient(nil, options...)
@@ -210,4 +215,11 @@ func truncateStr(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s
+}
+
+func getConfiguredProxyURL() string {
+	if config.Config == nil {
+		return ""
+	}
+	return strings.TrimSpace(config.Config.ProxyURL)
 }

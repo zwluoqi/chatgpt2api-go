@@ -3,13 +3,14 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestLoadSettingsFromFile(t *testing.T) {
 	dir := t.TempDir()
 	configFile := filepath.Join(dir, "config.json")
-	os.WriteFile(configFile, []byte(`{"auth-key": "test123", "refresh_account_interval_minute": 30}`), 0o644)
+	os.WriteFile(configFile, []byte(`{"auth-key": "test123", "proxy-url": "http://127.0.0.1:7890", "refresh_account_interval_minute": 30}`), 0o644)
 
 	cfg, err := loadSettings(dir)
 	if err != nil {
@@ -20,6 +21,9 @@ func TestLoadSettingsFromFile(t *testing.T) {
 	}
 	if cfg.RefreshAccountIntervalMinute != 30 {
 		t.Errorf("RefreshAccountIntervalMinute = %d, want 30", cfg.RefreshAccountIntervalMinute)
+	}
+	if cfg.ProxyURL != "http://127.0.0.1:7890" {
+		t.Errorf("ProxyURL = %q, want http://127.0.0.1:7890", cfg.ProxyURL)
 	}
 	if cfg.Host != "0.0.0.0" {
 		t.Errorf("Host = %q, want 0.0.0.0", cfg.Host)
@@ -32,10 +36,10 @@ func TestLoadSettingsFromFile(t *testing.T) {
 func TestLoadSettingsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	configFile := filepath.Join(dir, "config.json")
-	os.WriteFile(configFile, []byte(`{"auth-key": "file_key"}`), 0o644)
+	os.WriteFile(configFile, []byte(`{"auth-key": "file_key", "proxy-url": "http://127.0.0.1:7890"}`), 0o644)
 
-	os.Setenv("CHATGPT2API_AUTH_KEY", "env_key")
-	defer os.Unsetenv("CHATGPT2API_AUTH_KEY")
+	t.Setenv("CHATGPT2API_AUTH_KEY", "env_key")
+	t.Setenv("CHATGPT2API_PROXY_URL", "socks5://127.0.0.1:1080")
 
 	cfg, err := loadSettings(dir)
 	if err != nil {
@@ -44,6 +48,9 @@ func TestLoadSettingsEnvOverride(t *testing.T) {
 	if cfg.AuthKey != "env_key" {
 		t.Errorf("AuthKey = %q, want env_key (env should override file)", cfg.AuthKey)
 	}
+	if cfg.ProxyURL != "socks5://127.0.0.1:1080" {
+		t.Errorf("ProxyURL = %q, want socks5://127.0.0.1:1080 (env should override file)", cfg.ProxyURL)
+	}
 }
 
 func TestLoadSettingsNoAuthKey(t *testing.T) {
@@ -51,7 +58,8 @@ func TestLoadSettingsNoAuthKey(t *testing.T) {
 	configFile := filepath.Join(dir, "config.json")
 	os.WriteFile(configFile, []byte(`{}`), 0o644)
 
-	os.Unsetenv("CHATGPT2API_AUTH_KEY")
+	t.Setenv("CHATGPT2API_AUTH_KEY", "")
+	t.Setenv("CHATGPT2API_PROXY_URL", "")
 
 	_, err := loadSettings(dir)
 	if err == nil {
@@ -76,8 +84,8 @@ func TestLoadSettingsDefaultRefreshInterval(t *testing.T) {
 func TestLoadSettingsNoConfigFile(t *testing.T) {
 	dir := t.TempDir()
 
-	os.Setenv("CHATGPT2API_AUTH_KEY", "env_only_key")
-	defer os.Unsetenv("CHATGPT2API_AUTH_KEY")
+	t.Setenv("CHATGPT2API_AUTH_KEY", "env_only_key")
+	t.Setenv("CHATGPT2API_PROXY_URL", "https://127.0.0.1:8443")
 
 	cfg, err := loadSettings(dir)
 	if err != nil {
@@ -85,6 +93,9 @@ func TestLoadSettingsNoConfigFile(t *testing.T) {
 	}
 	if cfg.AuthKey != "env_only_key" {
 		t.Errorf("AuthKey = %q, want env_only_key", cfg.AuthKey)
+	}
+	if cfg.ProxyURL != "https://127.0.0.1:8443" {
+		t.Errorf("ProxyURL = %q, want https://127.0.0.1:8443", cfg.ProxyURL)
 	}
 }
 
@@ -104,5 +115,19 @@ func TestDataDirCreation(t *testing.T) {
 	}
 	if cfg.AccountsFile != filepath.Join(dataDir, "accounts.json") {
 		t.Errorf("AccountsFile = %q, want %q", cfg.AccountsFile, filepath.Join(dataDir, "accounts.json"))
+	}
+}
+
+func TestLoadSettingsInvalidProxyURL(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key": "test", "proxy-url": "127.0.0.1:7890"}`), 0o644)
+
+	_, err := loadSettings(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid proxy-url")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, "invalid proxy-url") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

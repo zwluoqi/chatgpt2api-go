@@ -1,4 +1,5 @@
 {
   "auth-key": "sk-123456",
+  "proxy-url": "http://127.0.0.1:7890",
   "refresh_account_interval_minute": 60
 }
