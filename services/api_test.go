@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"chatgpt2api-go/config"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +51,46 @@ func setupTestApp(t *testing.T) (*httptest.Server, string) {
 	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService)
 	srv := httptest.NewServer(router)
 	return srv, authKey
+}
+
+func setupTestAppWithAccountService(t *testing.T) (*httptest.Server, string, *AccountService) {
+	t.Helper()
+	dir := t.TempDir()
+	storeFile := filepath.Join(dir, "accounts.json")
+	cpaFile := filepath.Join(dir, "cpa_config.json")
+	configFile := filepath.Join(dir, "config.json")
+	dataDir := filepath.Join(dir, "data")
+	webDistDir := filepath.Join(dir, "web_dist")
+	os.MkdirAll(dataDir, 0o755)
+	os.MkdirAll(webDistDir, 0o755)
+	os.WriteFile(filepath.Join(webDistDir, "index.html"), []byte("<html>test</html>"), 0o644)
+	os.WriteFile(configFile, []byte("{\n  \"auth-key\": \"test-auth-key\"\n}\n"), 0o644)
+
+	authKey := "test-auth-key"
+	prevConfig := config.Config
+	config.Config = &config.AppSettings{
+		AuthKey:                      authKey,
+		Host:                         "0.0.0.0",
+		Port:                         8000,
+		ChatCompletionsEnabled:       true,
+		ConfigFile:                   configFile,
+		AccountsFile:                 storeFile,
+		RefreshAccountIntervalMinute: 60,
+		BaseDir:                      dir,
+		DataDir:                      dataDir,
+	}
+	t.Cleanup(func() {
+		config.Config = prevConfig
+	})
+
+	accountService := NewAccountService(storeFile)
+	cpaConfig := NewCPAConfig(cpaFile)
+	cpaImportService := NewCPAImportService(cpaConfig, accountService)
+	chatGPTService := NewChatGPTService(accountService)
+
+	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService)
+	srv := httptest.NewServer(router)
+	return srv, authKey, accountService
 }
 
 func authHeader(key string) string {
@@ -403,6 +445,173 @@ func TestImageGenerationNoAuth(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 401 {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestImageGenerationQuotaExceededMarksAccountLimited(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		return nil, &ImageGenerationError{
+			Message: "You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes.",
+		}
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "draw a cat",
+		"model":  "gpt-image-1",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 502 {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+
+	message := response["error"]
+	if message == nil || !strings.Contains(message.(string), "free plan limit for image generation requests") {
+		t.Fatalf("error = %v, want original quota exceeded message", response["error"])
+	}
+
+	account := accountService.GetAccount("token_a")
+	if account == nil {
+		t.Fatal("token_a account not found")
+	}
+	if account["status"] != "限流" {
+		t.Fatalf("status = %v, want 限流", account["status"])
+	}
+	if toInt(account["quota"]) != 0 {
+		t.Fatalf("quota = %v, want 0", account["quota"])
+	}
+	if account["restore_at"] == nil {
+		t.Fatal("restore_at should be set")
+	}
+}
+
+func TestImageEditsRejectsMoreThan16InputImages(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "edit this"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < MaxEditInputImages+1; i++ {
+		part, err := writer.CreateFormFile("image", "image.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte("png")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/edits", &body)
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["error"] != "image count must be between 1 and 16" {
+		t.Fatalf("error = %v, want image count must be between 1 and 16", response["error"])
+	}
+}
+
+func TestChatCompletionsPassesMultipleImagesToEdit(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previous := editImageResultFunc
+	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
+		if len(images) != 2 {
+			t.Fatalf("len(images) = %d, want 2", len(images))
+		}
+		if string(images[0].Data) != "test1" {
+			t.Fatalf("images[0].Data = %q, want test1", string(images[0].Data))
+		}
+		if string(images[1].Data) != "test2" {
+			t.Fatalf("images[1].Data = %q, want test2", string(images[1].Data))
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		editImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"model": "gpt-image-1",
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "edit this"},
+					map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": "data:image/png;base64,dGVzdDE=",
+						},
+					},
+					map[string]any{
+						"type":      "input_image",
+						"image_url": "data:image/png;base64,dGVzdDI=",
+					},
+				},
+			},
+		},
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 }
 

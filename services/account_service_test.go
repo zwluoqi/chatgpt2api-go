@@ -134,6 +134,34 @@ func TestAccountServiceMarkImageResultQuotaExhaust(t *testing.T) {
 	}
 }
 
+func TestAccountServiceUpdateQuotaZeroSetsLimited(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 3, "status": "正常"})
+
+	account := as.UpdateAccount("token_a", map[string]any{"quota": 0})
+	if account == nil {
+		t.Fatal("UpdateAccount returned nil")
+	}
+	if toInt(account["quota"]) != 0 {
+		t.Errorf("quota = %v, want 0", account["quota"])
+	}
+	if account["status"] != "限流" {
+		t.Errorf("status = %v, want 限流", account["status"])
+	}
+}
+
+func TestAccountServiceZeroQuotaIsNotAvailable(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 0})
+
+	_, err := as.GetAvailableAccessToken()
+	if err == nil {
+		t.Fatal("expected no available token")
+	}
+}
+
 func TestAccountServiceMarkImageResultUnknownQuota(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})

@@ -443,12 +443,12 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "image is required"})
 			return
 		}
-
-		var images []struct {
-			Data     []byte
-			FileName string
-			MimeType string
+		if len(files) > MaxEditInputImages {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)})
+			return
 		}
+
+		var images []RequestImage
 		for _, file := range files {
 			f, err := file.Open()
 			if err != nil {
@@ -469,11 +469,11 @@ func CreateApp(
 			if mimeType == "" {
 				mimeType = "image/png"
 			}
-			images = append(images, struct {
-				Data     []byte
-				FileName string
-				MimeType string
-			}{Data: data, FileName: fileName, MimeType: mimeType})
+			images = append(images, RequestImage{
+				Data:     data,
+				FileName: fileName,
+				MimeType: mimeType,
+			})
 		}
 
 		result, genErr := chatGPTService.EditWithPool(prompt, images, model, n)

@@ -11,13 +11,55 @@ type ChatGPTService struct {
 	AccountService *AccountService
 }
 
+var (
+	generateImageResultFunc = GenerateImageResult
+	editImageResultFunc     = EditImageResult
+)
+
 func NewChatGPTService(as *AccountService) *ChatGPTService {
 	return &ChatGPTService{AccountService: as}
+}
+
+func formatImageAccountState(account map[string]any) (string, string) {
+	if account == nil {
+		return "unknown", "unknown"
+	}
+	return fmt.Sprintf("%v", account["quota"]), fmt.Sprintf("%v", account["status"])
+}
+
+func (svc *ChatGPTService) handleImagePoolFailure(requestToken, tokenPrefix, logPrefix, message string) (map[string]any, bool) {
+	account := svc.AccountService.MarkImageResult(requestToken, false)
+
+	if IsTokenInvalidError(message) {
+		svc.AccountService.RemoveToken(requestToken)
+		fmt.Printf("[%s] remove invalid token=%s...\n", logPrefix, tokenPrefix)
+		return account, true
+	}
+
+	if IsImageQuotaExceededError(message) {
+		updates := map[string]any{
+			"quota":               0,
+			"status":              "限流",
+			"image_quota_unknown": false,
+			"restore_at":          nil,
+		}
+		if restoreAt := ExtractImageQuotaRestoreAt(message, time.Now()); restoreAt != nil {
+			updates["restore_at"] = restoreAt.Format(time.RFC3339)
+		}
+		if updated := svc.AccountService.UpdateAccount(requestToken, updates); updated != nil {
+			account = updated
+		}
+		fmt.Printf("[%s] mark limited token=%s... restore_at=%v\n", logPrefix, tokenPrefix, updates["restore_at"])
+		return account, true
+	}
+
+	return account, false
 }
 
 func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[string]any, error) {
 	var created *int64
 	var imageItems []any
+	var lastErr error
 
 	for index := 1; index <= n; index++ {
 		for {
@@ -31,22 +73,15 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 			fmt.Printf("[image-generate] start pooled token=%s... model=%s index=%d/%d\n",
 				tokenPrefix, model, index, n)
 
-			result, genErr := GenerateImageResult(svc.AccountService, requestToken, prompt, model)
+			result, genErr := generateImageResultFunc(svc.AccountService, requestToken, prompt, model)
 			if genErr != nil {
-				account := svc.AccountService.MarkImageResult(requestToken, false)
 				message := genErr.Error()
-				quota := "unknown"
-				status := "unknown"
-				if account != nil {
-					quota = fmt.Sprintf("%v", account["quota"])
-					status = fmt.Sprintf("%v", account["status"])
-				}
+				lastErr = genErr
+				account, retry := svc.handleImagePoolFailure(requestToken, tokenPrefix, "image-generate", message)
+				quota, status := formatImageAccountState(account)
 				fmt.Printf("[image-generate] fail pooled token=%s... error=%s quota=%s status=%s\n",
 					tokenPrefix, message, quota, status)
-
-				if IsTokenInvalidError(message) {
-					svc.AccountService.RemoveToken(requestToken)
-					fmt.Printf("[image-generate] remove invalid token=%s...\n", tokenPrefix)
+				if retry {
 					continue
 				}
 				break
@@ -68,12 +103,7 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 					}
 				}
 			}
-			quota := "unknown"
-			status := "unknown"
-			if account != nil {
-				quota = fmt.Sprintf("%v", account["quota"])
-				status = fmt.Sprintf("%v", account["status"])
-			}
+			quota, status := formatImageAccountState(account)
 			fmt.Printf("[image-generate] success pooled token=%s... quota=%s status=%s\n",
 				tokenPrefix, quota, status)
 			break
@@ -81,6 +111,9 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 	}
 
 	if len(imageItems) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
 		return nil, &ImageGenerationError{Message: "image generation failed"}
 	}
 
@@ -93,17 +126,17 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 	return result, nil
 }
 
-func (svc *ChatGPTService) EditWithPool(prompt string, images []struct {
-	Data     []byte
-	FileName string
-	MimeType string
-}, model string, n int) (map[string]any, error) {
+func (svc *ChatGPTService) EditWithPool(prompt string, images []RequestImage, model string, n int) (map[string]any, error) {
 	if len(images) == 0 {
 		return nil, &ImageGenerationError{Message: "image is required"}
+	}
+	if len(images) > MaxEditInputImages {
+		return nil, &ImageGenerationError{Message: fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}
 	}
 
 	var created *int64
 	var imageItems []any
+	var lastErr error
 
 	for index := 1; index <= n; index++ {
 		for {
@@ -117,22 +150,15 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []struct {
 			fmt.Printf("[image-edit] start pooled token=%s... model=%s index=%d/%d images=%d\n",
 				tokenPrefix, model, index, n, len(images))
 
-			result, editErr := EditImageResult(svc.AccountService, requestToken, prompt, images, model)
+			result, editErr := editImageResultFunc(svc.AccountService, requestToken, prompt, images, model)
 			if editErr != nil {
-				account := svc.AccountService.MarkImageResult(requestToken, false)
 				message := editErr.Error()
-				quota := "unknown"
-				status := "unknown"
-				if account != nil {
-					quota = fmt.Sprintf("%v", account["quota"])
-					status = fmt.Sprintf("%v", account["status"])
-				}
+				lastErr = editErr
+				account, retry := svc.handleImagePoolFailure(requestToken, tokenPrefix, "image-edit", message)
+				quota, status := formatImageAccountState(account)
 				fmt.Printf("[image-edit] fail pooled token=%s... error=%s quota=%s status=%s\n",
 					tokenPrefix, message, quota, status)
-
-				if IsTokenInvalidError(message) {
-					svc.AccountService.RemoveToken(requestToken)
-					fmt.Printf("[image-edit] remove invalid token=%s...\n", tokenPrefix)
+				if retry {
 					continue
 				}
 				break
@@ -154,12 +180,7 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []struct {
 					}
 				}
 			}
-			quota := "unknown"
-			status := "unknown"
-			if account != nil {
-				quota = fmt.Sprintf("%v", account["quota"])
-				status = fmt.Sprintf("%v", account["status"])
-			}
+			quota, status := formatImageAccountState(account)
 			fmt.Printf("[image-edit] success pooled token=%s... quota=%s status=%s\n",
 				tokenPrefix, quota, status)
 			break
@@ -167,6 +188,9 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []struct {
 	}
 
 	if len(imageItems) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
 		return nil, &ImageGenerationError{Message: "image edit failed"}
 	}
 
@@ -179,36 +203,34 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []struct {
 	return result, nil
 }
 
-func extractResponseImage(inputValue any) ([]byte, string, bool) {
+func extractResponseImages(inputValue any) []RequestImage {
 	if m, ok := inputValue.(map[string]any); ok {
-		return ExtractImageFromMessageContent(m["content"])
+		return ExtractImagesFromMessageContent(m["content"])
 	}
 	items, ok := inputValue.([]any)
 	if !ok {
-		return nil, "", false
+		return nil
 	}
+	var images []RequestImage
 	for i := len(items) - 1; i >= 0; i-- {
 		m, ok := items[i].(map[string]any)
 		if !ok {
 			continue
 		}
 		if strings.TrimSpace(fmt.Sprintf("%v", m["type"])) == "input_image" {
-			imageURL := fmt.Sprintf("%v", m["image_url"])
-			if strings.HasPrefix(imageURL, "data:") {
-				data, mime := parseDataURL(imageURL)
-				if data != nil {
-					return data, mime, true
-				}
+			extracted := ExtractImagesFromMessageContent([]any{m})
+			if len(extracted) > 0 {
+				images = append(extracted, images...)
 			}
 		}
 		if content, ok := m["content"]; ok {
-			data, mime, found := ExtractImageFromMessageContent(content)
-			if found {
-				return data, mime, true
+			extracted := ExtractImagesFromMessageContent(content)
+			if len(extracted) > 0 {
+				images = append(extracted, images...)
 			}
 		}
 	}
-	return nil, "", false
+	return images
 }
 
 type HTTPError struct {
@@ -253,17 +275,15 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "prompt is required"}}
 	}
 
-	imageData, mimeType, hasImage := ExtractChatImage(body)
+	images := ExtractChatImages(body)
+	if len(images) > MaxEditInputImages {
+		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}}
+	}
 
 	var imageResult map[string]any
 	var genErr error
 
-	if hasImage {
-		images := []struct {
-			Data     []byte
-			FileName string
-			MimeType string
-		}{{Data: imageData, FileName: "image.png", MimeType: mimeType}}
+	if len(images) > 0 {
 		imageResult, genErr = svc.EditWithPool(prompt, images, model, n)
 	} else {
 		imageResult, genErr = svc.GenerateWithPool(prompt, model, n)
@@ -293,7 +313,10 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "input text is required"}}
 	}
 
-	imageData, mimeType, hasImage := extractResponseImage(body["input"])
+	images := extractResponseImages(body["input"])
+	if len(images) > MaxEditInputImages {
+		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}}
+	}
 
 	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
 	if model == "" || model == "<nil>" {
@@ -303,12 +326,7 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 	var imageResult map[string]any
 	var genErr error
 
-	if hasImage {
-		images := []struct {
-			Data     []byte
-			FileName string
-			MimeType string
-		}{{Data: imageData, FileName: "image.png", MimeType: mimeType}}
+	if len(images) > 0 {
 		imageResult, genErr = svc.EditWithPool(prompt, images, "gpt-image-1", 1)
 	} else {
 		imageResult, genErr = svc.GenerateWithPool(prompt, "gpt-image-1", 1)

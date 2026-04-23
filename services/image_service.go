@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -179,9 +181,9 @@ func chatRequirements(s *session, accessToken, deviceID string) (string, map[str
 	reqToken := GetRequirementsToken(config)
 
 	headers := map[string]string{
-		"Authorization":  fmt.Sprintf("Bearer %s", accessToken),
-		"oai-device-id":  deviceID,
-		"content-type":   "application/json",
+		"Authorization": fmt.Sprintf("Bearer %s", accessToken),
+		"oai-device-id": deviceID,
+		"content-type":  "application/json",
 	}
 
 	resp, err := retry(func() (*fhttp.Response, error) {
@@ -227,6 +229,84 @@ func IsTokenInvalidError(message string) bool {
 		strings.Contains(text, "invalidated oauth token")
 }
 
+func IsImageQuotaExceededError(message string) bool {
+	text := strings.ToLower(message)
+	return strings.Contains(text, "free plan limit for image generation requests") ||
+		(strings.Contains(text, "image generation requests") && strings.Contains(text, "limit resets in"))
+}
+
+var imageQuotaDurationPattern = regexp.MustCompile(`(?i)(\d+)\s*(day|days|hour|hours|minute|minutes)`)
+
+func parseImageQuotaDuration(text string) (time.Duration, int) {
+	matches := imageQuotaDurationPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0, 0
+	}
+
+	var duration time.Duration
+	count := 0
+	for _, match := range matches {
+		value, err := strconv.Atoi(match[1])
+		if err != nil || value <= 0 {
+			continue
+		}
+
+		switch strings.ToLower(match[2]) {
+		case "day", "days":
+			duration += time.Duration(value) * 24 * time.Hour
+		case "hour", "hours":
+			duration += time.Duration(value) * time.Hour
+		case "minute", "minutes":
+			duration += time.Duration(value) * time.Minute
+		default:
+			continue
+		}
+		count++
+	}
+	return duration, count
+}
+
+func ExtractImageQuotaRestoreAt(message string, now time.Time) *time.Time {
+	if !IsImageQuotaExceededError(message) {
+		return nil
+	}
+
+	lowerMessage := strings.ToLower(message)
+	const marker = "limit resets in"
+
+	bestDuration := time.Duration(0)
+	bestCount := 0
+	searchStart := 0
+
+	for {
+		idx := strings.Index(lowerMessage[searchStart:], marker)
+		if idx < 0 {
+			break
+		}
+
+		start := searchStart + idx + len(marker)
+		end := len(message)
+		if next := strings.Index(lowerMessage[start:], marker); next >= 0 {
+			end = start + next
+		}
+
+		duration, count := parseImageQuotaDuration(message[start:end])
+		if count > bestCount || (count == bestCount && count > 0 && (bestDuration == 0 || duration < bestDuration)) {
+			bestDuration = duration
+			bestCount = count
+		}
+
+		searchStart = start
+	}
+
+	if bestCount == 0 || bestDuration <= 0 {
+		return nil
+	}
+
+	restoreAt := now.Add(bestDuration).UTC().Truncate(time.Second)
+	return &restoreAt
+}
+
 func uploadImage(s *session, accessToken, deviceID string, imageData []byte, fileName, mimeType string) (string, error) {
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", accessToken),
@@ -236,11 +316,11 @@ func uploadImage(s *session, accessToken, deviceID string, imageData []byte, fil
 
 	resp, err := retry(func() (*fhttp.Response, error) {
 		return s.postJSON(baseURL+"/backend-api/files", headers, map[string]any{
-			"file_name":         fileName,
-			"file_size":         len(imageData),
-			"use_case":          "multimodal",
+			"file_name":           fileName,
+			"file_size":           len(imageData),
+			"use_case":            "multimodal",
 			"timezone_offset_min": -480,
-			"reset_rate_limits": false,
+			"reset_rate_limits":   false,
 		}, 30*time.Second)
 	}, 3, 2*time.Second)
 	if err != nil {
@@ -263,7 +343,7 @@ func uploadImage(s *session, accessToken, deviceID string, imageData []byte, fil
 
 	putResp, err := retry(func() (*fhttp.Response, error) {
 		return s.putData(uploadURL, map[string]string{
-			"Content-Type":    mimeType,
+			"Content-Type":   mimeType,
 			"x-ms-blob-type": "BlockBlob",
 			"x-ms-version":   "2020-04-08",
 		}, imageData, 60*time.Second)
@@ -303,17 +383,17 @@ func truncate(s string, maxLen int) string {
 
 func sendConversation(s *session, accessToken, deviceID, chatToken string, proofToken *string, parentMessageID, prompt, model string) (*fhttp.Response, error) {
 	headers := map[string]string{
-		"Authorization":                              fmt.Sprintf("Bearer %s", accessToken),
-		"accept":                                     "text/event-stream",
-		"accept-language":                            "zh-CN,zh;q=0.9,en;q=0.8",
-		"content-type":                               "application/json",
-		"oai-device-id":                              deviceID,
-		"oai-language":                               "zh-CN",
-		"oai-client-build-number":                    "5955942",
-		"oai-client-version":                         "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
-		"origin":                                     baseURL,
-		"referer":                                    baseURL + "/",
-		"openai-sentinel-chat-requirements-token":    chatToken,
+		"Authorization":           fmt.Sprintf("Bearer %s", accessToken),
+		"accept":                  "text/event-stream",
+		"accept-language":         "zh-CN,zh;q=0.9,en;q=0.8",
+		"content-type":            "application/json",
+		"oai-device-id":           deviceID,
+		"oai-language":            "zh-CN",
+		"oai-client-build-number": "5955942",
+		"oai-client-version":      "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
+		"origin":                  baseURL,
+		"referer":                 baseURL + "/",
+		"openai-sentinel-chat-requirements-token": chatToken,
 	}
 	if proofToken != nil {
 		headers["openai-sentinel-proof-token"] = *proofToken
@@ -334,25 +414,25 @@ func sendConversation(s *session, accessToken, deviceID, chatToken string, proof
 				},
 			},
 		},
-		"parent_message_id":            parentMessageID,
-		"model":                        model,
-		"history_and_training_disabled": false,
-		"timezone_offset_min":          -480,
-		"timezone":                     "America/Los_Angeles",
-		"conversation_mode":            map[string]any{"kind": "primary_assistant"},
-		"conversation_origin":          nil,
-		"force_paragen":                false,
-		"force_paragen_model_slug":     "",
-		"force_rate_limit":             false,
-		"force_use_sse":                true,
+		"parent_message_id":                    parentMessageID,
+		"model":                                model,
+		"history_and_training_disabled":        false,
+		"timezone_offset_min":                  -480,
+		"timezone":                             "America/Los_Angeles",
+		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
+		"conversation_origin":                  nil,
+		"force_paragen":                        false,
+		"force_paragen_model_slug":             "",
+		"force_rate_limit":                     false,
+		"force_use_sse":                        true,
 		"paragen_cot_summary_display_override": "allow",
-		"paragen_stream_type_override": nil,
-		"reset_rate_limits":            false,
-		"suggestions":                  []any{},
-		"supported_encodings":          []any{},
-		"system_hints":                 []any{"picture_v2"},
-		"variant_purpose":              "comparison_implicit",
-		"websocket_request_id":         uuid.New().String(),
+		"paragen_stream_type_override":         nil,
+		"reset_rate_limits":                    false,
+		"suggestions":                          []any{},
+		"supported_encodings":                  []any{},
+		"system_hints":                         []any{"picture_v2"},
+		"variant_purpose":                      "comparison_implicit",
+		"websocket_request_id":                 uuid.New().String(),
 		"client_contextual_info": map[string]any{
 			"is_dark_mode":      false,
 			"time_since_loaded": rand.Intn(450) + 50,
@@ -387,17 +467,17 @@ func sendConversation(s *session, accessToken, deviceID, chatToken string, proof
 
 func sendEditConversation(s *session, accessToken, deviceID, chatToken string, proofToken *string, parentMessageID, prompt, model string, images []EditInputImage) (*fhttp.Response, error) {
 	headers := map[string]string{
-		"Authorization":                              fmt.Sprintf("Bearer %s", accessToken),
-		"accept":                                     "text/event-stream",
-		"accept-language":                            "zh-CN,zh;q=0.9,en;q=0.8",
-		"content-type":                               "application/json",
-		"oai-device-id":                              deviceID,
-		"oai-language":                               "zh-CN",
-		"oai-client-build-number":                    "5955942",
-		"oai-client-version":                         "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
-		"origin":                                     baseURL,
-		"referer":                                    baseURL + "/",
-		"openai-sentinel-chat-requirements-token":    chatToken,
+		"Authorization":           fmt.Sprintf("Bearer %s", accessToken),
+		"accept":                  "text/event-stream",
+		"accept-language":         "zh-CN,zh;q=0.9,en;q=0.8",
+		"content-type":            "application/json",
+		"oai-device-id":           deviceID,
+		"oai-language":            "zh-CN",
+		"oai-client-build-number": "5955942",
+		"oai-client-version":      "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad",
+		"origin":                  baseURL,
+		"referer":                 baseURL + "/",
+		"openai-sentinel-chat-requirements-token": chatToken,
 	}
 	if proofToken != nil {
 		headers["openai-sentinel-proof-token"] = *proofToken
@@ -414,13 +494,13 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 			"height":        img.Height,
 		})
 		attachments = append(attachments, map[string]any{
-			"id":          img.FileID,
-			"size":        len(img.Data),
-			"name":        img.FileName,
-			"mime_type":   img.MimeType,
-			"width":       img.Width,
-			"height":      img.Height,
-			"source":      "local",
+			"id":           img.FileID,
+			"size":         len(img.Data),
+			"name":         img.FileName,
+			"mime_type":    img.MimeType,
+			"width":        img.Width,
+			"height":       img.Height,
+			"source":       "local",
 			"is_big_paste": false,
 		})
 	}
@@ -442,23 +522,23 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 				},
 			},
 		},
-		"parent_message_id":            parentMessageID,
-		"model":                        model,
-		"history_and_training_disabled": false,
-		"timezone_offset_min":          -480,
-		"timezone":                     "America/Los_Angeles",
-		"conversation_mode":            map[string]any{"kind": "primary_assistant"},
-		"force_paragen":                false,
-		"force_paragen_model_slug":     "",
-		"force_rate_limit":             false,
-		"force_use_sse":                true,
+		"parent_message_id":                    parentMessageID,
+		"model":                                model,
+		"history_and_training_disabled":        false,
+		"timezone_offset_min":                  -480,
+		"timezone":                             "America/Los_Angeles",
+		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
+		"force_paragen":                        false,
+		"force_paragen_model_slug":             "",
+		"force_rate_limit":                     false,
+		"force_use_sse":                        true,
 		"paragen_cot_summary_display_override": "allow",
-		"reset_rate_limits":            false,
-		"suggestions":                  []any{},
-		"supported_encodings":          []any{},
-		"system_hints":                 []any{"picture_v2"},
-		"variant_purpose":              "comparison_implicit",
-		"websocket_request_id":         uuid.New().String(),
+		"reset_rate_limits":                    false,
+		"suggestions":                          []any{},
+		"supported_encodings":                  []any{},
+		"system_hints":                         []any{"picture_v2"},
+		"variant_purpose":                      "comparison_implicit",
+		"websocket_request_id":                 uuid.New().String(),
 		"client_contextual_info": map[string]any{
 			"is_dark_mode":      false,
 			"time_since_loaded": rand.Intn(450) + 50,
@@ -908,11 +988,7 @@ func getImageDimensions(imageData []byte) (int, int) {
 	return 1024, 1024
 }
 
-func EditImageResult(accountService *AccountService, accessToken, prompt string, images []struct {
-	Data     []byte
-	FileName string
-	MimeType string
-}, model string) (map[string]any, error) {
+func EditImageResult(accountService *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
 	prompt = strings.TrimSpace(prompt)
 	accessToken = strings.TrimSpace(accessToken)
 	if prompt == "" {

@@ -267,6 +267,31 @@ func TestBuildChatImageCompletion(t *testing.T) {
 }
 
 func TestExtractImageFromMessageContent(t *testing.T) {
+	t.Run("multiple images", func(t *testing.T) {
+		content := []any{
+			map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:image/png;base64,dGVzdDE=",
+				},
+			},
+			map[string]any{
+				"type":      "input_image",
+				"image_url": "data:image/jpeg;base64,dGVzdDI=",
+			},
+		}
+		images := ExtractImagesFromMessageContent(content)
+		if len(images) != 2 {
+			t.Fatalf("len(images) = %d, want 2", len(images))
+		}
+		if string(images[0].Data) != "test1" {
+			t.Fatalf("images[0].Data = %q, want test1", string(images[0].Data))
+		}
+		if images[1].MimeType != "image/jpeg" {
+			t.Fatalf("images[1].MimeType = %q, want image/jpeg", images[1].MimeType)
+		}
+	})
+
 	t.Run("image_url with data URL", func(t *testing.T) {
 		content := []any{
 			map[string]any{
@@ -297,4 +322,43 @@ func TestExtractImageFromMessageContent(t *testing.T) {
 			t.Error("expected no image")
 		}
 	})
+}
+
+func TestExtractChatImages(t *testing.T) {
+	body := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "ignore"},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "image_url",
+						"image_url": map[string]any{
+							"url": "data:image/png;base64,dGVzdDE=",
+						},
+					},
+					map[string]any{
+						"type":      "input_image",
+						"image_url": "data:image/png;base64,dGVzdDI=",
+					},
+				},
+			},
+		},
+	}
+
+	images := ExtractChatImages(body)
+	if len(images) != 2 {
+		t.Fatalf("len(images) = %d, want 2", len(images))
+	}
+	if string(images[0].Data) != "test1" {
+		t.Fatalf("images[0].Data = %q, want test1", string(images[0].Data))
+	}
+	if string(images[1].Data) != "test2" {
+		t.Fatalf("images[1].Data = %q, want test2", string(images[1].Data))
+	}
 }

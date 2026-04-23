@@ -263,6 +263,38 @@ func normalizeAccount(item map[string]any) map[string]any {
 	return normalized
 }
 
+func syncImageStatusByQuota(account map[string]any) {
+	if account == nil {
+		return
+	}
+
+	status := cleanToken(account["status"])
+	if status == "禁用" || status == "异常" {
+		return
+	}
+
+	imageQuotaUnknown, _ := account["image_quota_unknown"].(bool)
+	quota := toInt(account["quota"])
+
+	if imageQuotaUnknown {
+		if status == "" || status == "限流" {
+			account["status"] = "正常"
+		}
+		account["restore_at"] = nil
+		return
+	}
+
+	if quota == 0 {
+		account["status"] = "限流"
+		return
+	}
+
+	if status == "" || status == "限流" {
+		account["status"] = "正常"
+	}
+	account["restore_at"] = nil
+}
+
 func extractQuotaAndRestoreAt(limitsProgress []any) (int, *string, bool) {
 	for _, item := range limitsProgress {
 		m, ok := item.(map[string]any)
@@ -643,6 +675,12 @@ func (as *AccountService) UpdateAccount(accessToken string, updates map[string]a
 	account := normalizeAccount(merged)
 	if account == nil {
 		return nil
+	}
+	if _, ok := updates["quota"]; ok {
+		syncImageStatusByQuota(account)
+	}
+	if _, ok := updates["image_quota_unknown"]; ok {
+		syncImageStatusByQuota(account)
 	}
 	as.accounts[idx] = account
 	as.saveAccounts()

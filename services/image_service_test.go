@@ -2,6 +2,7 @@ package services
 
 import (
 	"testing"
+	"time"
 )
 
 func TestGetImageDimensionsPNG(t *testing.T) {
@@ -46,6 +47,55 @@ func TestIsTokenInvalidError(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("IsTokenInvalidError(%q) = %v, want %v", tt.message, result, tt.expected)
 		}
+	}
+}
+
+func TestIsImageQuotaExceededError(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes.", true},
+		{"IMAGE GENERATION REQUESTS can create more images when the limit resets in 5 minutes.", true},
+		{"rate limit exceeded", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		result := IsImageQuotaExceededError(tt.message)
+		if result != tt.expected {
+			t.Errorf("IsImageQuotaExceededError(%q) = %v, want %v", tt.message, result, tt.expected)
+		}
+	}
+}
+
+func TestExtractImageQuotaRestoreAt(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	message := "You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes."
+
+	restoreAt := ExtractImageQuotaRestoreAt(message, now)
+	if restoreAt == nil {
+		t.Fatal("ExtractImageQuotaRestoreAt returned nil")
+	}
+
+	expected := now.Add(10*time.Hour + 25*time.Minute)
+	if !restoreAt.Equal(expected) {
+		t.Errorf("restoreAt = %v, want %v", restoreAt, expected)
+	}
+}
+
+func TestExtractImageQuotaRestoreAtRepeatedText(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	message := "You've hit theYou've hit the free plan limit for image generation requests. You can create moreYou've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes."
+
+	restoreAt := ExtractImageQuotaRestoreAt(message, now)
+	if restoreAt == nil {
+		t.Fatal("ExtractImageQuotaRestoreAt returned nil for repeated text")
+	}
+
+	expected := now.Add(10*time.Hour + 25*time.Minute)
+	if !restoreAt.Equal(expected) {
+		t.Errorf("restoreAt = %v, want %v", restoreAt, expected)
 	}
 }
 

@@ -14,6 +14,14 @@ var ImageModels = map[string]bool{
 	"gpt-image-2": true,
 }
 
+const MaxEditInputImages = 16
+
+type RequestImage struct {
+	Data     []byte
+	FileName string
+	MimeType string
+}
+
 func IsImageChatRequest(body map[string]any) bool {
 	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
 	if ImageModels[model] {
@@ -123,11 +131,24 @@ func extractPromptFromMessageContent(content any) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func ExtractImageFromMessageContent(content any) ([]byte, string, bool) {
+func buildRequestImage(data []byte, mime string, index int) RequestImage {
+	if mime == "" {
+		mime = "image/png"
+	}
+	return RequestImage{
+		Data:     data,
+		FileName: fmt.Sprintf("image_%d.png", index),
+		MimeType: mime,
+	}
+}
+
+func ExtractImagesFromMessageContent(content any) []RequestImage {
 	items, ok := content.([]any)
 	if !ok {
-		return nil, "", false
+		return nil
 	}
+
+	var images []RequestImage
 	for _, item := range items {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -148,7 +169,7 @@ func ExtractImageFromMessageContent(content any) ([]byte, string, bool) {
 			if strings.HasPrefix(url, "data:") {
 				data, mime := parseDataURL(url)
 				if data != nil {
-					return data, mime, true
+					images = append(images, buildRequestImage(data, mime, len(images)+1))
 				}
 			}
 		}
@@ -157,12 +178,20 @@ func ExtractImageFromMessageContent(content any) ([]byte, string, bool) {
 			if strings.HasPrefix(imageURL, "data:") {
 				data, mime := parseDataURL(imageURL)
 				if data != nil {
-					return data, mime, true
+					images = append(images, buildRequestImage(data, mime, len(images)+1))
 				}
 			}
 		}
 	}
-	return nil, "", false
+	return images
+}
+
+func ExtractImageFromMessageContent(content any) ([]byte, string, bool) {
+	images := ExtractImagesFromMessageContent(content)
+	if len(images) == 0 {
+		return nil, "", false
+	}
+	return images[0].Data, images[0].MimeType, true
 }
 
 func parseDataURL(url string) ([]byte, string) {
@@ -186,10 +215,10 @@ func parseDataURL(url string) ([]byte, string) {
 	return decoded, mime
 }
 
-func ExtractChatImage(body map[string]any) ([]byte, string, bool) {
+func ExtractChatImages(body map[string]any) []RequestImage {
 	messages, ok := body["messages"].([]any)
 	if !ok {
-		return nil, "", false
+		return nil
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg, ok := messages[i].(map[string]any)
@@ -200,12 +229,20 @@ func ExtractChatImage(body map[string]any) ([]byte, string, bool) {
 		if role != "user" {
 			continue
 		}
-		data, mime, found := ExtractImageFromMessageContent(msg["content"])
-		if found {
-			return data, mime, true
+		images := ExtractImagesFromMessageContent(msg["content"])
+		if len(images) > 0 {
+			return images
 		}
 	}
-	return nil, "", false
+	return nil
+}
+
+func ExtractChatImage(body map[string]any) ([]byte, string, bool) {
+	images := ExtractChatImages(body)
+	if len(images) == 0 {
+		return nil, "", false
+	}
+	return images[0].Data, images[0].MimeType, true
 }
 
 func ExtractChatPrompt(body map[string]any) string {
