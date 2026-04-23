@@ -1,6 +1,5 @@
 {
   "auth-key": "sk-123456",
   "enable-chat-completions": true,
-  "proxy-url": "http://zwluoqi:453826@187.77.159.166:6978/",
   "refresh_account_interval_minute": 60
 }
