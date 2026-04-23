@@ -15,6 +15,7 @@ type AppSettings struct {
 	AuthKey                      string
 	ProxyURL                     string
 	ChatCompletionsEnabled       bool
+	InsecureSkipVerify           bool
 	Host                         string
 	Port                         int
 	ConfigFile                   string
@@ -115,10 +116,26 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		}
 	}
 
+	insecureSkipVerify := false
+	if v := strings.TrimSpace(os.Getenv("CHATGPT2API_INSECURE_SKIP_VERIFY")); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CHATGPT2API_INSECURE_SKIP_VERIFY: %w", err)
+		}
+		insecureSkipVerify = parsed
+	} else if v, ok := rawConfig["insecure-skip-verify"]; ok {
+		parsed, err := parseBoolValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid insecure-skip-verify: %w", err)
+		}
+		insecureSkipVerify = parsed
+	}
+
 	return &AppSettings{
 		AuthKey:                      authKey,
 		ProxyURL:                     proxyURL,
 		ChatCompletionsEnabled:       chatCompletionsEnabled,
+		InsecureSkipVerify:           insecureSkipVerify,
 		Host:                         "0.0.0.0",
 		Port:                         8000,
 		ConfigFile:                   configFile,
@@ -186,6 +203,16 @@ func GetChatCompletionsEnabled() bool {
 		return true
 	}
 	return Config.ChatCompletionsEnabled
+}
+
+func GetInsecureSkipVerify() bool {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if Config == nil {
+		return false
+	}
+	return Config.InsecureSkipVerify
 }
 
 func UpdateProxyURL(proxyURL string) error {

@@ -173,3 +173,33 @@ func TestLoadSettingsChatCompletionsEnvOverride(t *testing.T) {
 		t.Error("ChatCompletionsEnabled = false, want true")
 	}
 }
+
+func TestLoadSettingsInsecureSkipVerifyOverride(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key": "test", "insecure-skip-verify": true}`), 0o644)
+
+	cfg, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify = false, want true")
+	}
+}
+
+func TestLoadSettingsInsecureSkipVerifyEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key": "test", "insecure-skip-verify": false}`), 0o644)
+
+	t.Setenv("CHATGPT2API_INSECURE_SKIP_VERIFY", "true")
+
+	cfg, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify = false, want true")
+	}
+}

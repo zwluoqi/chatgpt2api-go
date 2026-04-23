@@ -1,11 +1,14 @@
 package services
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"strings"
+	"time"
 
 	"chatgpt2api-go/config"
 
@@ -47,23 +50,47 @@ type TLSClient struct {
 }
 
 func NewTLSClient() (*TLSClient, error) {
-	return newTLSClient("")
+	return newTLSClient("", 0)
 }
 
 func NewTLSClientWithProxyURL(proxyURL string) (*TLSClient, error) {
-	return newTLSClient(strings.TrimSpace(proxyURL))
+	return newTLSClient(strings.TrimSpace(proxyURL), 0)
 }
 
-func newTLSClient(proxyURL string) (*TLSClient, error) {
+func NewTLSClientWithProxyURLAndTimeout(proxyURL string, timeout time.Duration) (*TLSClient, error) {
+	return newTLSClient(strings.TrimSpace(proxyURL), timeout)
+}
+
+func newTLSClient(proxyURL string, timeout time.Duration) (*TLSClient, error) {
 	profile := tlsProfiles[rand.Intn(len(tlsProfiles))]
 	ua := defaultUserAgents[rand.Intn(len(defaultUserAgents))]
+	timeoutSeconds := 30
+	if timeout > 0 {
+		timeoutSeconds = int(math.Ceil(timeout.Seconds()))
+		if timeoutSeconds < 1 {
+			timeoutSeconds = 1
+		}
+	}
 
 	jar := tls_client.NewCookieJar()
+	var transportOptions *tls_client.TransportOptions
+	if rootCAs, err := x509.SystemCertPool(); err == nil && rootCAs != nil {
+		transportOptions = &tls_client.TransportOptions{
+			RootCAs: rootCAs,
+		}
+	}
 	options := []tls_client.HttpClientOption{
 		tls_client.WithClientProfile(profile),
-		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithTimeoutSeconds(timeoutSeconds),
 		tls_client.WithCookieJar(jar),
+		tls_client.WithDisableHttp3(),
 		tls_client.WithRandomTLSExtensionOrder(),
+	}
+	if transportOptions != nil {
+		options = append(options, tls_client.WithTransportOptions(transportOptions))
+	}
+	if config.GetInsecureSkipVerify() {
+		options = append(options, tls_client.WithInsecureSkipVerify())
 	}
 	if proxyURL == "" {
 		proxyURL = getConfiguredProxyURL()

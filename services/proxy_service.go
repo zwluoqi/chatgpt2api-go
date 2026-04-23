@@ -37,11 +37,20 @@ func UpdateProxySettings(enabled *bool, proxyURL string) (ProxySettings, error) 
 	return GetProxySettings(), nil
 }
 
-func TestProxy(proxyURL string, timeout time.Duration) ProxyTestResult {
-	_ = timeout
+func TestProxy(proxyURL string, timeout time.Duration) (result ProxyTestResult) {
 	started := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			result = ProxyTestResult{
+				OK:        false,
+				Status:    0,
+				LatencyMS: int(time.Since(started).Milliseconds()),
+				Error:     strPtr(fmt.Sprintf("proxy test failed: %v", r)),
+			}
+		}
+	}()
 
-	tc, err := NewTLSClientWithProxyURL(proxyURL)
+	tc, err := NewTLSClientWithProxyURLAndTimeout(proxyURL, timeout)
 	if err != nil {
 		return ProxyTestResult{
 			OK:        false,
@@ -66,7 +75,7 @@ func TestProxy(proxyURL string, timeout time.Duration) ProxyTestResult {
 
 	status := resp.StatusCode
 	var errorText *string
-	ok := status < 500
+	ok := status >= 200 && status < 400
 	if !ok {
 		errorText = strPtr(fmt.Sprintf("HTTP %d", status))
 	}
