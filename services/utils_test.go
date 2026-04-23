@@ -1,8 +1,10 @@
 package services
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -265,6 +267,50 @@ func TestBuildChatImageCompletion(t *testing.T) {
 	}
 	if content == "" || content == "Image generation completed." {
 		t.Error("content should contain image markdown")
+	}
+}
+
+func TestBuildChatImageCompletionStreamChunks(t *testing.T) {
+	completion := map[string]any{
+		"id":      "chatcmpl-test",
+		"object":  "chat.completion",
+		"created": int64(1713800000),
+		"model":   "gpt-image-1",
+		"choices": []any{
+			map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "![image_1](data:image/png;base64,dGVzdA==)",
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+
+	chunks := BuildChatImageCompletionStreamChunks(completion)
+	if len(chunks) != 3 {
+		t.Fatalf("len(chunks) = %d, want 3", len(chunks))
+	}
+	if chunks[0]["object"] != "chat.completion.chunk" {
+		t.Fatalf("object = %v, want chat.completion.chunk", chunks[0]["object"])
+	}
+	firstChoices, _ := chunks[0]["choices"].([]any)
+	firstChoice, _ := firstChoices[0].(map[string]any)
+	firstDelta, _ := firstChoice["delta"].(map[string]any)
+	if firstDelta["role"] != "assistant" {
+		t.Fatalf("first delta role = %v, want assistant", firstDelta["role"])
+	}
+	secondChoices, _ := chunks[1]["choices"].([]any)
+	secondChoice, _ := secondChoices[0].(map[string]any)
+	secondDelta, _ := secondChoice["delta"].(map[string]any)
+	if !strings.Contains(fmt.Sprintf("%v", secondDelta["content"]), "data:image/png;base64") {
+		t.Fatalf("second delta content = %v, want image markdown", secondDelta["content"])
+	}
+	lastChoices, _ := chunks[2]["choices"].([]any)
+	lastChoice, _ := lastChoices[0].(map[string]any)
+	if lastChoice["finish_reason"] != "stop" {
+		t.Fatalf("finish_reason = %v, want stop", lastChoice["finish_reason"])
 	}
 }
 

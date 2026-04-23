@@ -514,3 +514,79 @@ func BuildChatImageCompletion(model, prompt string, imageResult map[string]any) 
 		},
 	}
 }
+
+func BuildChatImageCompletionStreamChunks(completion map[string]any) []map[string]any {
+	id := strings.TrimSpace(fmt.Sprintf("%v", completion["id"]))
+	if id == "" || id == "<nil>" {
+		id = fmt.Sprintf("chatcmpl-%s", uuid.New().String())
+	}
+
+	created := time.Now().Unix()
+	if c, ok := completion["created"].(int64); ok {
+		created = c
+	} else if c, ok := completion["created"].(float64); ok {
+		created = int64(c)
+	}
+
+	model := strings.TrimSpace(fmt.Sprintf("%v", completion["model"]))
+	content := ""
+	if choices, ok := completion["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if message, ok := choice["message"].(map[string]any); ok {
+				content = strings.TrimSpace(fmt.Sprintf("%v", message["content"]))
+			}
+		}
+	}
+
+	chunks := []map[string]any{
+		{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []any{
+				map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"role": "assistant",
+					},
+					"finish_reason": nil,
+				},
+			},
+		},
+	}
+
+	if content != "" && content != "<nil>" {
+		chunks = append(chunks, map[string]any{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []any{
+				map[string]any{
+					"index": 0,
+					"delta": map[string]any{
+						"content": content,
+					},
+					"finish_reason": nil,
+				},
+			},
+		})
+	}
+
+	chunks = append(chunks, map[string]any{
+		"id":      id,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []any{
+			map[string]any{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": "stop",
+			},
+		},
+	})
+
+	return chunks
+}

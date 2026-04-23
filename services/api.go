@@ -2,8 +2,10 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +97,35 @@ func summarizeResponseRequest(body map[string]any) string {
 
 	return fmt.Sprintf("model=%q stream=%q input_items=%d images=%d prompt=%t",
 		model, stream, inputItems, imageCount, promptPresent)
+}
+
+func writeChatCompletionStream(c *gin.Context, completion map[string]any) {
+	c.Status(http.StatusOK)
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming is not supported"})
+		return
+	}
+
+	for _, chunk := range BuildChatImageCompletionStreamChunks(completion) {
+		payload, err := json.Marshal(chunk)
+		if err != nil {
+			fmt.Printf("[chat-completions] stream marshal error=%v\n", err)
+			return
+		}
+		_, _ = c.Writer.Write([]byte("data: "))
+		_, _ = c.Writer.Write(payload)
+		_, _ = c.Writer.Write([]byte("\n\n"))
+		flusher.Flush()
+	}
+
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flusher.Flush()
 }
 
 func resolveWebAsset(webDistDir, requestedPath string) string {
@@ -537,6 +568,10 @@ func CreateApp(
 			fmt.Printf("[chat-completions] reject status=%d error=%s %s\n",
 				httpErr.StatusCode, httpErr.Error(), summarizeImageChatRequest(body))
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
+			return
+		}
+		if stream, ok := body["stream"].(bool); ok && stream {
+			writeChatCompletionStream(c, result)
 			return
 		}
 		c.JSON(200, result)

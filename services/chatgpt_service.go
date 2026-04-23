@@ -289,13 +289,6 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 		}
 	}
 
-	if stream, ok := body["stream"].(bool); ok && stream {
-		return nil, &HTTPError{
-			StatusCode: 400,
-			Detail:     map[string]any{"error": "stream is not supported for image generation"},
-		}
-	}
-
 	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
 	if model == "" || model == "<nil>" {
 		model = "gpt-image-1"
