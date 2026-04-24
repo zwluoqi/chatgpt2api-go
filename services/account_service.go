@@ -260,6 +260,7 @@ func normalizeAccount(item map[string]any) map[string]any {
 	}
 	normalized["success"] = toInt(normalized["success"])
 	normalized["fail"] = toInt(normalized["fail"])
+	syncImageStatusByQuota(normalized)
 	return normalized
 }
 
