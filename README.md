@@ -106,6 +106,28 @@ go run main.go
 
 - `/v1/chat/completions` 流式输出已实现，但仍在测试，请谨慎使用
 
+## Screenshots
+
+文生图界面：
+
+![image](https://raw.githubusercontent.com/basketikun/chatgpt2api/main/assets/image.png)
+
+编辑图：
+
+![image](https://raw.githubusercontent.com/basketikun/chatgpt2api/main/assets/image_edit.png)
+
+Cherry Studio 中使用，支持作为绘图接口接入：
+
+![image](https://raw.githubusercontent.com/basketikun/chatgpt2api/main/assets/chery_studio.png)
+
+号池管理：
+
+![image](https://raw.githubusercontent.com/basketikun/chatgpt2api/main/assets/account_pool.png)
+
+New Api 接入：
+
+![image](https://raw.githubusercontent.com/basketikun/chatgpt2api/main/assets/new_api.png)
+
 ## API
 
 所有 AI 接口都需要请求头：
