@@ -101,7 +101,7 @@ func TestAccountServiceUpdate(t *testing.T) {
 func TestAccountServiceMarkImageResult(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 3})
+	as.UpdateAccount("token_a", map[string]any{"quota": 3, "image_quota_unknown": false})
 
 	account := as.MarkImageResult("token_a", true)
 	if account == nil {
@@ -123,7 +123,7 @@ func TestAccountServiceMarkImageResult(t *testing.T) {
 func TestAccountServiceMarkImageResultQuotaExhaust(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常", "image_quota_unknown": false})
 
 	account := as.MarkImageResult("token_a", true)
 	if toInt(account["quota"]) != 0 {
@@ -137,7 +137,7 @@ func TestAccountServiceMarkImageResultQuotaExhaust(t *testing.T) {
 func TestAccountServiceUpdateQuotaZeroSetsLimited(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 3, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 3, "status": "正常", "image_quota_unknown": false})
 
 	account := as.UpdateAccount("token_a", map[string]any{"quota": 0})
 	if account == nil {
@@ -154,7 +154,7 @@ func TestAccountServiceUpdateQuotaZeroSetsLimited(t *testing.T) {
 func TestAccountServiceZeroQuotaIsNotAvailable(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 0})
+	as.UpdateAccount("token_a", map[string]any{"quota": 0, "image_quota_unknown": false})
 
 	_, err := as.GetAvailableAccessToken()
 	if err == nil {
@@ -196,7 +196,7 @@ func TestAccountServiceListTokens(t *testing.T) {
 func TestAccountServiceListLimitedTokens(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_1", "token_2"})
-	as.UpdateAccount("token_1", map[string]any{"status": "限流"})
+	as.UpdateAccount("token_1", map[string]any{"status": "限流", "quota": 0, "image_quota_unknown": false})
 
 	limited := as.ListLimitedTokens()
 	if len(limited) != 1 {
@@ -270,8 +270,8 @@ func TestNormalizeAccount(t *testing.T) {
 	if account["type"] != "Free" {
 		t.Errorf("type = %v, want Free (default)", account["type"])
 	}
-	if account["status"] != "正常" {
-		t.Errorf("status = %v, want 正常 (default)", account["status"])
+	if account["status"] != "限流" {
+		t.Errorf("status = %v, want 限流 (quota=0 with image_quota_unknown=false)", account["status"])
 	}
 }
 

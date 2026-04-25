@@ -575,6 +575,19 @@ type sseResult struct {
 	ConversationID string
 	FileIDs        []string
 	Text           string
+	Queued         bool
+}
+
+func isImageQueuedMessage(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "正在处理图片") ||
+		strings.Contains(lower, "目前有很多人在创建图片") ||
+		strings.Contains(lower, "图片准备好后") ||
+		strings.Contains(lower, "processing your image") ||
+		strings.Contains(lower, "lots of people creating images") ||
+		strings.Contains(lower, "we'll notify you when") ||
+		strings.Contains(lower, "image is taking") ||
+		strings.Contains(lower, "high demand")
 }
 
 func parseSSE(resp *fhttp.Response) sseResult {
@@ -665,10 +678,12 @@ func parseSSE(resp *fhttp.Response) sseResult {
 		}
 	}
 
+	fullText := strings.Join(textParts, "")
 	return sseResult{
 		ConversationID: conversationID,
 		FileIDs:        fileIDs,
-		Text:           strings.Join(textParts, ""),
+		Text:           fullText,
+		Queued:         isImageQueuedMessage(fullText),
 	}
 }
 
@@ -724,9 +739,14 @@ func extractImageIDs(mapping map[string]any) []string {
 	return fileIDs
 }
 
-func pollImageIDs(s *session, accessToken, deviceID, conversationID string) []string {
+func pollImageIDs(s *session, accessToken, deviceID, conversationID string, timeout ...time.Duration) []string {
+	maxWait := 180 * time.Second
+	if len(timeout) > 0 && timeout[0] > 0 {
+		maxWait = timeout[0]
+	}
+	tokenPrefix := accessToken[:min(12, len(accessToken))]
 	started := time.Now()
-	for time.Since(started) < 180*time.Second {
+	for time.Since(started) < maxWait {
 		resp, err := retry(func() (*fhttp.Response, error) {
 			return s.get(
 				fmt.Sprintf("%s/backend-api/conversation/%s", baseURL, conversationID),
@@ -761,10 +781,17 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string) []st
 		}
 		fileIDs := extractImageIDs(mapping)
 		if len(fileIDs) > 0 {
+			elapsed := time.Since(started).Truncate(time.Second)
+			fmt.Printf("[image-poll] success token=%s... conversation=%s elapsed=%s\n", tokenPrefix, conversationID, elapsed)
 			return fileIDs
 		}
-		time.Sleep(3 * time.Second)
+		elapsed := time.Since(started).Truncate(time.Second)
+		if elapsed.Seconds() > 0 && int(elapsed.Seconds())%30 == 0 {
+			fmt.Printf("[image-poll] waiting token=%s... conversation=%s elapsed=%s/%s\n", tokenPrefix, conversationID, elapsed, maxWait)
+		}
+		time.Sleep(5 * time.Second)
 	}
+	fmt.Printf("[image-poll] timeout token=%s... conversation=%s timeout=%s\n", tokenPrefix, conversationID, maxWait)
 	return nil
 }
 
@@ -913,11 +940,21 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	responseText := strings.TrimSpace(parsed.Text)
 
 	if parsed.ConversationID != "" && len(fileIDs) == 0 {
-		fileIDs = pollImageIDs(s, accessToken, deviceID, parsed.ConversationID)
+		pollTimeout := 180 * time.Second
+		if parsed.Queued {
+			pollTimeout = 181 * time.Second
+			fmt.Printf("[image-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
+				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
+		}
+		fileIDs = pollImageIDs(s, accessToken, deviceID, parsed.ConversationID, pollTimeout)
 	}
 
 	if len(fileIDs) == 0 {
 		if responseText != "" {
+			if parsed.Queued {
+				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}
+			}
 			fmt.Printf("[image-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
 		}
@@ -937,7 +974,11 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		return nil, err
 	}
 
-	fmt.Printf("[image-upstream] success token=%s... images=1\n", tokenPrefix)
+	if parsed.Queued {
+		fmt.Printf("[image-upstream] success token=%s... images=1 (was queued)\n", tokenPrefix)
+	} else {
+		fmt.Printf("[image-upstream] success token=%s... images=1\n", tokenPrefix)
+	}
 	return map[string]any{
 		"created": time.Now().Unix(),
 		"data": []any{
@@ -1065,12 +1106,22 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	responseText := strings.TrimSpace(parsed.Text)
 
 	if parsed.ConversationID != "" && len(fileIDs) == 0 {
-		polled := pollImageIDs(s, accessToken, deviceID, parsed.ConversationID)
+		pollTimeout := 180 * time.Second
+		if parsed.Queued {
+			pollTimeout = 181 * time.Second
+			fmt.Printf("[image-edit-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
+				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
+		}
+		polled := pollImageIDs(s, accessToken, deviceID, parsed.ConversationID, pollTimeout)
 		fileIDs = filterOutputFileIDs(polled, inputFileIDs)
 	}
 
 	if len(fileIDs) == 0 {
 		if responseText != "" {
+			if parsed.Queued {
+				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}
+			}
 			fmt.Printf("[image-edit-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
 		}
@@ -1090,7 +1141,11 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		return nil, err
 	}
 
-	fmt.Printf("[image-edit-upstream] success token=%s... inputs=%d\n", tokenPrefix, len(uploadedImages))
+	if parsed.Queued {
+		fmt.Printf("[image-edit-upstream] success token=%s... inputs=%d (was queued)\n", tokenPrefix, len(uploadedImages))
+	} else {
+		fmt.Printf("[image-edit-upstream] success token=%s... inputs=%d\n", tokenPrefix, len(uploadedImages))
+	}
 	return map[string]any{
 		"created": time.Now().Unix(),
 		"data": []any{

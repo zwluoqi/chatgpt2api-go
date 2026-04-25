@@ -582,7 +582,9 @@ func (as *AccountService) AddAccounts(tokens []string) map[string]any {
 		current, exists := indexed[accessToken]
 		if !exists {
 			added++
-			current = map[string]any{}
+			current = map[string]any{
+				"image_quota_unknown": true,
+			}
 		} else {
 			skipped++
 		}

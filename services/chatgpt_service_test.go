@@ -10,8 +10,8 @@ import (
 func TestGenerateWithPoolMarksQuotaLimitedAndFallsBack(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a", "token_b"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
-	as.UpdateAccount("token_b", map[string]any{"quota": 2, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常", "image_quota_unknown": false})
+	as.UpdateAccount("token_b", map[string]any{"quota": 2, "status": "正常", "image_quota_unknown": false})
 
 	previous := generateImageResultFunc
 	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
@@ -77,7 +77,7 @@ func TestGenerateWithPoolMarksQuotaLimitedAndFallsBack(t *testing.T) {
 func TestGenerateWithPoolReturnsQuotaExceededMessage(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常", "image_quota_unknown": false})
 
 	message := "You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes."
 	previous := generateImageResultFunc
@@ -112,7 +112,7 @@ func TestGenerateWithPoolReturnsQuotaExceededMessage(t *testing.T) {
 func TestCreateImageCompletionUsesAllInputImages(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常", "image_quota_unknown": false})
 
 	previous := editImageResultFunc
 	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
@@ -171,7 +171,7 @@ func TestCreateImageCompletionUsesAllInputImages(t *testing.T) {
 func TestCreateResponseUsesAllInputImages(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常", "image_quota_unknown": false})
 
 	previous := editImageResultFunc
 	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
@@ -224,7 +224,7 @@ func TestCreateResponseUsesAllInputImages(t *testing.T) {
 func TestCreateImageCompletionAppendsSizeToPrompt(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常", "image_quota_unknown": false})
 
 	previous := generateImageResultFunc
 	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
@@ -275,7 +275,7 @@ func TestCreateImageCompletionDownloadsRemoteImageURL(t *testing.T) {
 
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})
-	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常", "image_quota_unknown": false})
 
 	previous := editImageResultFunc
 	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
