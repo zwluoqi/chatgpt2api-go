@@ -827,17 +827,23 @@ func fetchDownloadURL(s *session, accessToken, deviceID, conversationID, fileID 
 	if isSediment {
 		endpoint = fmt.Sprintf("%s/backend-api/conversation/%s/attachment/%s/download", baseURL, conversationID, rawID)
 	} else {
-		endpoint = fmt.Sprintf("%s/backend-api/files/%s/download", baseURL, rawID)
+		endpoint = fmt.Sprintf("%s/backend-api/files/download/%s?conversation_id=%s", baseURL, rawID, conversationID)
 	}
+
+	tokenPrefix := accessToken[:min(12, len(accessToken))]
+	fmt.Printf("[image-download] fetchDownloadURL endpoint=%s token=%s...\n", endpoint, tokenPrefix)
 
 	resp, err := s.get(endpoint, map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", accessToken),
 		"oai-device-id": deviceID,
 	}, 30*time.Second)
 	if err != nil || resp.StatusCode != 200 {
+		status := 0
 		if resp != nil {
+			status = resp.StatusCode
 			resp.Body.Close()
 		}
+		fmt.Printf("[image-download] fetchDownloadURL failed status=%d token=%s...\n", status, tokenPrefix)
 		return ""
 	}
 	defer resp.Body.Close()
@@ -845,11 +851,15 @@ func fetchDownloadURL(s *session, accessToken, deviceID, conversationID, fileID 
 	var payload map[string]any
 	json.NewDecoder(resp.Body).Decode(&payload)
 	downloadURL, _ := payload["download_url"].(string)
+	fmt.Printf("[image-download] fetchDownloadURL ok download_url=%s\n", truncateStr(downloadURL, 120))
 	return downloadURL
 }
 
-func downloadAsBase64(s *session, downloadURL string) (string, error) {
-	resp, err := s.get(downloadURL, nil, 60*time.Second)
+func downloadAsBase64(s *session, accessToken, downloadURL string) (string, error) {
+	headers := map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", accessToken),
+	}
+	resp, err := s.get(downloadURL, headers, 60*time.Second)
 	if err != nil {
 		return "", &ImageGenerationError{Message: fmt.Sprintf("download output image failed: %v url=%s", err, downloadURL)}
 	}
@@ -968,7 +978,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		return nil, &ImageGenerationError{Message: "failed to get download url"}
 	}
 
-	b64, err := downloadAsBase64(s, downloadURL)
+	b64, err := downloadAsBase64(s, accessToken, downloadURL)
 	if err != nil {
 		fmt.Printf("[image-upstream] fail token=%s... error=%v\n", tokenPrefix, err)
 		return nil, err
@@ -1135,7 +1145,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		return nil, &ImageGenerationError{Message: "failed to get download url"}
 	}
 
-	b64, err := downloadAsBase64(s, downloadURL)
+	b64, err := downloadAsBase64(s, accessToken, downloadURL)
 	if err != nil {
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=%v\n", tokenPrefix, err)
 		return nil, err
