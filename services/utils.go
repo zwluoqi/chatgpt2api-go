@@ -195,33 +195,33 @@ func extractImageURLValue(raw any) string {
 func downloadRemoteImage(urlStr string, index int) (RequestImage, error) {
 	parsed, err := neturl.Parse(strings.TrimSpace(urlStr))
 	if err != nil {
-		return RequestImage{}, fmt.Errorf("invalid image url")
+		return RequestImage{}, fmt.Errorf("download input image failed: invalid url=%s", urlStr)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return RequestImage{}, fmt.Errorf("unsupported image url scheme")
+		return RequestImage{}, fmt.Errorf("download input image failed: unsupported scheme url=%s", urlStr)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return RequestImage{}, fmt.Errorf("invalid image url")
+		return RequestImage{}, fmt.Errorf("download input image failed: invalid url=%s", urlStr)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return RequestImage{}, fmt.Errorf("download image failed: %v", err)
+		return RequestImage{}, fmt.Errorf("download input image failed: %v url=%s", err, urlStr)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return RequestImage{}, fmt.Errorf("download image failed: status %d", resp.StatusCode)
+		return RequestImage{}, fmt.Errorf("download input image failed: status %d url=%s", resp.StatusCode, urlStr)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
-		return RequestImage{}, fmt.Errorf("download image failed")
+		return RequestImage{}, fmt.Errorf("download input image failed: read body error url=%s", urlStr)
 	}
 	if len(data) == 0 {
-		return RequestImage{}, fmt.Errorf("download image failed")
+		return RequestImage{}, fmt.Errorf("download input image failed: empty body url=%s", urlStr)
 	}
 
 	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))

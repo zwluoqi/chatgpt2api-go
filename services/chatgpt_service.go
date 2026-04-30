@@ -303,7 +303,9 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 	if prompt == "" {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "prompt is required"}}
 	}
-	prompt = MergePromptWithSize(prompt, fmt.Sprintf("%v", body["size"]))
+	if size := strings.TrimSpace(fmt.Sprintf("%v", body["size"])); size != "<nil>" {
+		prompt = MergePromptWithSize(prompt, size)
+	}
 
 	images, resolveErr := ResolveChatImages(body)
 	if resolveErr != nil {
@@ -345,7 +347,9 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 	if prompt == "" {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "input text is required"}}
 	}
-	prompt = MergePromptWithSize(prompt, fmt.Sprintf("%v", body["size"]))
+	if size := strings.TrimSpace(fmt.Sprintf("%v", body["size"])); size != "<nil>" {
+		prompt = MergePromptWithSize(prompt, size)
+	}
 
 	images, resolveErr := resolveResponseImages(body["input"])
 	if resolveErr != nil {

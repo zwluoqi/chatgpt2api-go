@@ -851,16 +851,16 @@ func fetchDownloadURL(s *session, accessToken, deviceID, conversationID, fileID 
 func downloadAsBase64(s *session, downloadURL string) (string, error) {
 	resp, err := s.get(downloadURL, nil, 60*time.Second)
 	if err != nil {
-		return "", &ImageGenerationError{Message: "download image failed"}
+		return "", &ImageGenerationError{Message: fmt.Sprintf("download output image failed: %v url=%s", err, downloadURL)}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return "", &ImageGenerationError{Message: "download image failed"}
+		return "", &ImageGenerationError{Message: fmt.Sprintf("download output image failed: status %d url=%s", resp.StatusCode, downloadURL)}
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil || len(data) == 0 {
-		return "", &ImageGenerationError{Message: "download image failed"}
+		return "", &ImageGenerationError{Message: fmt.Sprintf("download output image failed: empty body url=%s", downloadURL)}
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
 }
