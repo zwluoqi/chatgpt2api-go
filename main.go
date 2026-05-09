@@ -33,6 +33,7 @@ func main() {
 	cpaConfig := services.NewCPAConfig(cpaConfigFile)
 	cpaImportService := services.NewCPAImportService(cpaConfig, accountService)
 	chatGPTService := services.NewChatGPTService(accountService)
+	logService := services.NewLogService(cfg.DataDir)
 
 	webDistDir := filepath.Join(baseDir, "web_dist")
 
@@ -49,6 +50,7 @@ func main() {
 		cpaConfig,
 		cpaImportService,
 		chatGPTService,
+		logService,
 	)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

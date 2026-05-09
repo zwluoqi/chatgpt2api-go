@@ -21,6 +21,8 @@ type AppSettings struct {
 	ConfigFile                   string
 	AccountsFile                 string
 	RefreshAccountIntervalMinute int
+	ImagePollTimeoutSecs         int
+	LogMaxEntries                int
 	BaseDir                      string
 	DataDir                      string
 }
@@ -131,6 +133,28 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		insecureSkipVerify = parsed
 	}
 
+	imagePollTimeoutSecs := 180
+	if v, ok := rawConfig["image-poll-timeout-secs"]; ok {
+		parsed, err := parseIntValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid image-poll-timeout-secs: %w", err)
+		}
+		if parsed > 0 {
+			imagePollTimeoutSecs = parsed
+		}
+	}
+
+	logMaxEntries := 200
+	if v, ok := rawConfig["log-max-entries"]; ok {
+		parsed, err := parseIntValue(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid log-max-entries: %w", err)
+		}
+		if parsed > 0 {
+			logMaxEntries = parsed
+		}
+	}
+
 	return &AppSettings{
 		AuthKey:                      authKey,
 		ProxyURL:                     proxyURL,
@@ -141,9 +165,32 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		ConfigFile:                   configFile,
 		AccountsFile:                 filepath.Join(dataDir, "accounts.json"),
 		RefreshAccountIntervalMinute: refreshInterval,
+		ImagePollTimeoutSecs:         imagePollTimeoutSecs,
+		LogMaxEntries:                logMaxEntries,
 		BaseDir:                      baseDir,
 		DataDir:                      dataDir,
 	}, nil
+}
+
+func parseIntValue(v any) (int, error) {
+	switch val := v.(type) {
+	case float64:
+		return int(val), nil
+	case int:
+		return val, nil
+	case string:
+		text := strings.TrimSpace(val)
+		if text == "" {
+			return 0, fmt.Errorf("integer value is required")
+		}
+		return strconv.Atoi(text)
+	default:
+		text := strings.TrimSpace(fmt.Sprintf("%v", v))
+		if text == "" {
+			return 0, fmt.Errorf("integer value is required")
+		}
+		return strconv.Atoi(text)
+	}
 }
 
 func parseBoolValue(v any) (bool, error) {
@@ -203,6 +250,26 @@ func GetChatCompletionsEnabled() bool {
 		return true
 	}
 	return Config.ChatCompletionsEnabled
+}
+
+func GetImagePollTimeoutSecs() int {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if Config == nil || Config.ImagePollTimeoutSecs <= 0 {
+		return 180
+	}
+	return Config.ImagePollTimeoutSecs
+}
+
+func GetLogMaxEntries() int {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if Config == nil || Config.LogMaxEntries <= 0 {
+		return 200
+	}
+	return Config.LogMaxEntries
 }
 
 func GetInsecureSkipVerify() bool {

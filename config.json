@@ -1,5 +1,7 @@
 {
   "auth-key": "sk-123456",
   "enable-chat-completions": true,
-  "refresh_account_interval_minute": 60
+  "refresh_account_interval_minute": 60,
+  "image-poll-timeout-secs": 180,
+  "log-max-entries": 200
 }

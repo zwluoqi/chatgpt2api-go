@@ -191,6 +191,7 @@ func CreateApp(
 	cpaConfig *CPAConfig,
 	cpaImportService *CPAImportService,
 	chatGPTService *ChatGPTService,
+	logService *LogService,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -468,12 +469,16 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
+		call := logService.NewCall("/v1/images/generations", body.Model, "文生图", body.Prompt)
 		prompt := MergePromptWithSize(body.Prompt, body.Size)
 		result, err := chatGPTService.GenerateWithPool(prompt, body.Model, body.N)
 		if err != nil {
+			call.Failure(err.Error())
 			c.JSON(502, gin.H{"error": err.Error()})
 			return
 		}
+		call.AddOutputsFromImageData(result)
+		call.Success(nil)
 		c.JSON(200, result)
 	})
 
@@ -496,20 +501,25 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
+		call := logService.NewCall("/v1/images/edits", model, "图生图", prompt)
 		prompt = MergePromptWithSize(prompt, size)
 
 		form, err := c.MultipartForm()
 		if err != nil {
+			call.Failure("invalid multipart form")
 			c.JSON(400, gin.H{"error": "invalid multipart form"})
 			return
 		}
 		files := form.File["image"]
 		if len(files) == 0 {
+			call.Failure("image is required")
 			c.JSON(400, gin.H{"error": "image is required"})
 			return
 		}
 		if len(files) > MaxEditInputImages {
-			c.JSON(400, gin.H{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)})
+			msg := fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)
+			call.Failure(msg)
+			c.JSON(400, gin.H{"error": msg})
 			return
 		}
 
@@ -517,12 +527,14 @@ func CreateApp(
 		for _, file := range files {
 			f, err := file.Open()
 			if err != nil {
+				call.Failure("failed to read image")
 				c.JSON(400, gin.H{"error": "failed to read image"})
 				return
 			}
 			data, err := io.ReadAll(f)
 			f.Close()
 			if err != nil || len(data) == 0 {
+				call.Failure("image file is empty")
 				c.JSON(400, gin.H{"error": "image file is empty"})
 				return
 			}
@@ -541,11 +553,15 @@ func CreateApp(
 			})
 		}
 
+		call.AddInputRequestImages(images)
 		result, genErr := chatGPTService.EditWithPool(prompt, images, model, n)
 		if genErr != nil {
+			call.Failure(genErr.Error())
 			c.JSON(502, gin.H{"error": genErr.Error()})
 			return
 		}
+		call.AddOutputsFromImageData(result)
+		call.Success(nil)
 		c.JSON(200, result)
 	})
 
@@ -563,17 +579,25 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "invalid request body"})
 			return
 		}
+		model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+		call := logService.NewCall("/v1/chat/completions", model, "对话调用", ExtractChatPrompt(body))
+		call.AddInputRequestImages(ExtractChatImages(body))
+		stream, _ := body["stream"].(bool)
 		result, httpErr := chatGPTService.CreateImageCompletion(body)
 		if httpErr != nil {
 			fmt.Printf("[chat-completions] reject status=%d error=%s %s\n",
 				httpErr.StatusCode, httpErr.Error(), summarizeImageChatRequest(body))
+			call.Failure(httpErr.Error())
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}
-		if stream, ok := body["stream"].(bool); ok && stream {
+		call.AddOutputsFromChatCompletion(result)
+		if stream {
 			writeChatCompletionStream(c, result)
+			call.StreamSuccess(nil)
 			return
 		}
+		call.Success(nil)
 		c.JSON(200, result)
 	})
 
@@ -587,14 +611,53 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "invalid request body"})
 			return
 		}
+		model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+		call := logService.NewCall("/v1/responses", model, "Responses", ExtractResponsePrompt(body["input"]))
+		call.AddInputRequestImages(extractResponseImages(body["input"]))
 		result, httpErr := chatGPTService.CreateResponse(body)
 		if httpErr != nil {
 			fmt.Printf("[responses] reject status=%d error=%s %s\n",
 				httpErr.StatusCode, httpErr.Error(), summarizeResponseRequest(body))
+			call.Failure(httpErr.Error())
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}
+		call.AddOutputsFromResponse(result)
+		call.Success(nil)
 		c.JSON(200, result)
+	})
+
+	r.GET("/api/logs", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		filter := LogFilter{
+			Type:      strings.TrimSpace(c.Query("type")),
+			StartDate: strings.TrimSpace(c.Query("start_date")),
+			EndDate:   strings.TrimSpace(c.Query("end_date")),
+		}
+		if v := strings.TrimSpace(c.Query("limit")); v != "" {
+			n := 0
+			fmt.Sscanf(v, "%d", &n)
+			if n > 0 {
+				filter.Limit = n
+			}
+		}
+		c.JSON(200, gin.H{"items": logService.List(filter)})
+	})
+
+	r.POST("/api/logs/delete", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request body"})
+			return
+		}
+		c.JSON(200, gin.H{"removed": logService.Delete(body.IDs)})
 	})
 
 	// CPA endpoints

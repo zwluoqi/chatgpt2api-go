@@ -49,7 +49,8 @@ func setupTestApp(t *testing.T) (*httptest.Server, string) {
 	cpaImportService := NewCPAImportService(cpaConfig, accountService)
 	chatGPTService := NewChatGPTService(accountService)
 
-	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService)
+	logService := NewLogService(dataDir)
+	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService, logService)
 	srv := httptest.NewServer(router)
 	return srv, authKey
 }
@@ -89,7 +90,8 @@ func setupTestAppWithAccountService(t *testing.T) (*httptest.Server, string, *Ac
 	cpaImportService := NewCPAImportService(cpaConfig, accountService)
 	chatGPTService := NewChatGPTService(accountService)
 
-	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService)
+	logService := NewLogService(dataDir)
+	router := CreateApp(authKey, "0.1.0", webDistDir, accountService, cpaConfig, cpaImportService, chatGPTService, logService)
 	srv := httptest.NewServer(router)
 	return srv, authKey, accountService
 }

@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 
+	"chatgpt2api-go/config"
+
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/google/uuid"
 )
@@ -742,7 +744,7 @@ func extractImageIDs(mapping map[string]any) []string {
 }
 
 func pollImageIDs(s *session, accessToken, deviceID, conversationID string, timeout ...time.Duration) []string {
-	maxWait := 180 * time.Second
+	maxWait := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 	if len(timeout) > 0 && timeout[0] > 0 {
 		maxWait = timeout[0]
 	}
@@ -952,9 +954,8 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	responseText := strings.TrimSpace(parsed.Text)
 
 	if parsed.ConversationID != "" && len(fileIDs) == 0 {
-		pollTimeout := 180 * time.Second
+		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if parsed.Queued {
-			pollTimeout = 181 * time.Second
 			fmt.Printf("[image-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
 				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
 		}
@@ -1118,9 +1119,8 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	responseText := strings.TrimSpace(parsed.Text)
 
 	if parsed.ConversationID != "" && len(fileIDs) == 0 {
-		pollTimeout := 180 * time.Second
+		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if parsed.Queued {
-			pollTimeout = 181 * time.Second
 			fmt.Printf("[image-edit-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
 				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
 		}
