@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"chatgpt2api-go/config"
 
@@ -259,6 +258,7 @@ func IsImageQuotaExceededError(message string) bool {
 }
 
 var imageQuotaDurationPattern = regexp.MustCompile(`(?i)(\d+)\s*(day|days|hour|hours|minute|minutes)`)
+var conversationIDPattern = regexp.MustCompile(`"conversation_id"\s*:\s*"([^"]+)"`)
 
 func parseImageQuotaDuration(text string) (time.Duration, int) {
 	matches := imageQuotaDurationPattern.FindAllStringSubmatch(text, -1)
@@ -328,6 +328,14 @@ func ExtractImageQuotaRestoreAt(message string, now time.Time) *time.Time {
 
 	restoreAt := now.Add(bestDuration).UTC().Truncate(time.Second)
 	return &restoreAt
+}
+
+func extractConversationIDFromPayload(payload string) string {
+	match := conversationIDPattern.FindStringSubmatch(payload)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 func uploadImage(s *session, accessToken, deviceID string, imageData []byte, fileName, mimeType string) (string, error) {
@@ -614,6 +622,18 @@ func messageRole(message map[string]any) string {
 	return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", author["role"])))
 }
 
+func isImageToolMessage(message map[string]any) bool {
+	if message == nil || messageRole(message) != "tool" {
+		return false
+	}
+	metadata, _ := message["metadata"].(map[string]any)
+	if metadata == nil || strings.TrimSpace(fmt.Sprintf("%v", metadata["async_task_type"])) != "image_gen" {
+		return false
+	}
+	content, _ := message["content"].(map[string]any)
+	return content != nil && strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) == "multimodal_text"
+}
+
 func messageText(message map[string]any) string {
 	content, _ := message["content"].(map[string]any)
 	if content == nil {
@@ -661,6 +681,35 @@ func messageTimestamp(message map[string]any) float64 {
 		}
 	}
 	return 0
+}
+
+func appendMessageFileIDs(message map[string]any, fileIDSet map[string]bool, fileIDs *[]string) {
+	content, _ := message["content"].(map[string]any)
+	if content == nil {
+		return
+	}
+	parts, _ := content["parts"].([]any)
+	for _, part := range parts {
+		partMap, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		pointer := fmt.Sprintf("%v", partMap["asset_pointer"])
+		switch {
+		case strings.HasPrefix(pointer, "file-service://"):
+			fileID := strings.TrimPrefix(pointer, "file-service://")
+			if fileID != "" && !fileIDSet[fileID] {
+				fileIDSet[fileID] = true
+				*fileIDs = append(*fileIDs, fileID)
+			}
+		case strings.HasPrefix(pointer, "sediment://"):
+			fileID := "sed:" + strings.TrimPrefix(pointer, "sediment://")
+			if fileID != "sed:" && !fileIDSet[fileID] {
+				fileIDSet[fileID] = true
+				*fileIDs = append(*fileIDs, fileID)
+			}
+		}
+	}
 }
 
 func isTerminalImageText(text string) bool {
@@ -801,39 +850,8 @@ func parseSSE(resp *fhttp.Response) sseResult {
 		if payload == "" || payload == "[DONE]" {
 			break
 		}
-
-		prefixes := []struct {
-			prefix string
-			stored string
-		}{
-			{"file-service://", ""},
-			{"sediment://", "sed:"},
-		}
-		for _, p := range prefixes {
-			start := 0
-			for {
-				idx := strings.Index(payload[start:], p.prefix)
-				if idx < 0 {
-					break
-				}
-				start += idx + len(p.prefix)
-				tail := payload[start:]
-				var fileID []byte
-				for _, c := range tail {
-					if unicode.IsLetter(c) || unicode.IsDigit(c) || c == '_' || c == '-' {
-						fileID = append(fileID, byte(c))
-					} else {
-						break
-					}
-				}
-				if len(fileID) > 0 {
-					value := p.stored + string(fileID)
-					if !fileIDSet[value] {
-						fileIDSet[value] = true
-						fileIDs = append(fileIDs, value)
-					}
-				}
-			}
+		if cid := extractConversationIDFromPayload(payload); cid != "" {
+			result.ConversationID = cid
 		}
 
 		var obj map[string]any
@@ -876,6 +894,19 @@ func parseSSE(resp *fhttp.Response) sseResult {
 				assistantTextTS = timestamp
 			}
 		}
+
+		for _, candidate := range []any{obj["message"], obj["v"]} {
+			message, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if inner, ok := message["message"].(map[string]any); ok {
+				message = inner
+			}
+			if isImageToolMessage(message) {
+				appendMessageFileIDs(message, fileIDSet, &fileIDs)
+			}
+		}
 	}
 
 	result.FileIDs = fileIDs
@@ -896,41 +927,10 @@ func extractImageIDs(mapping map[string]any) []string {
 		if message == nil {
 			continue
 		}
-		author, _ := message["author"].(map[string]any)
-		metadata, _ := message["metadata"].(map[string]any)
-		content, _ := message["content"].(map[string]any)
-
-		if author == nil || fmt.Sprintf("%v", author["role"]) != "tool" {
+		if !isImageToolMessage(message) {
 			continue
 		}
-		if metadata == nil || fmt.Sprintf("%v", metadata["async_task_type"]) != "image_gen" {
-			continue
-		}
-		if content == nil || fmt.Sprintf("%v", content["content_type"]) != "multimodal_text" {
-			continue
-		}
-
-		parts, _ := content["parts"].([]any)
-		for _, part := range parts {
-			partMap, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			pointer := fmt.Sprintf("%v", partMap["asset_pointer"])
-			if strings.HasPrefix(pointer, "file-service://") {
-				fileID := strings.TrimPrefix(pointer, "file-service://")
-				if !fileIDSet[fileID] {
-					fileIDSet[fileID] = true
-					fileIDs = append(fileIDs, fileID)
-				}
-			} else if strings.HasPrefix(pointer, "sediment://") {
-				fileID := "sed:" + strings.TrimPrefix(pointer, "sediment://")
-				if !fileIDSet[fileID] {
-					fileIDSet[fileID] = true
-					fileIDs = append(fileIDs, fileID)
-				}
-			}
-		}
+		appendMessageFileIDs(message, fileIDSet, &fileIDs)
 	}
 	return fileIDs
 }

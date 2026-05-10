@@ -210,6 +210,39 @@ func TestParseSSEPrefersLatestAssistantTerminalText(t *testing.T) {
 	}
 }
 
+func TestParseSSEIgnoresUserAttachmentPointers(t *testing.T) {
+	body := strings.Join([]string{
+		"data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"multimodal_text\",\"parts\":[{\"content_type\":\"image_asset_pointer\",\"asset_pointer\":\"sediment://input_file_1\"},\"请基于这张图生成海报\"]}}}",
+		"data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"assistant\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"{\\\"prompt\\\":\\\"海报\\\",\\\"size\\\":\\\"1024x1024\\\"}\"]}}}",
+		"",
+	}, "\n\n")
+	resp := &fhttp.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	parsed := parseSSE(resp)
+	if len(parsed.FileIDs) != 0 {
+		t.Fatalf("FileIDs = %v, want no output file ids from user attachment pointers", parsed.FileIDs)
+	}
+	if parsed.ConversationID != "conv_1" {
+		t.Fatalf("ConversationID = %q, want conv_1", parsed.ConversationID)
+	}
+}
+
+func TestParseSSEExtractsConversationIDFromRawPayload(t *testing.T) {
+	body := "data: {\"conversation_id\":\"conv_raw\",\"message\":invalid-json}\n\n"
+	resp := &fhttp.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	parsed := parseSSE(resp)
+	if parsed.ConversationID != "conv_raw" {
+		t.Fatalf("ConversationID = %q, want conv_raw", parsed.ConversationID)
+	}
+}
+
 func TestExtractConversationStateStopsOnTerminalAssistantText(t *testing.T) {
 	mapping := map[string]any{
 		"msg_user": map[string]any{
