@@ -61,8 +61,16 @@ func extractBearerToken(authorization string) string {
 }
 
 func requireAuthKey(c *gin.Context, authKey string) bool {
+	return requireAuthKeyWithQuery(c, authKey, false)
+}
+
+func requireAuthKeyWithQuery(c *gin.Context, authKey string, allowQuery bool) bool {
 	auth := c.GetHeader("Authorization")
-	if extractBearerToken(auth) != strings.TrimSpace(authKey) {
+	token := extractBearerToken(auth)
+	if token == "" && allowQuery {
+		token = strings.TrimSpace(c.Query("auth_key"))
+	}
+	if token != strings.TrimSpace(authKey) {
 		c.JSON(401, gin.H{"error": "authorization is invalid"})
 		return false
 	}
@@ -658,6 +666,24 @@ func CreateApp(
 			return
 		}
 		c.JSON(200, gin.H{"removed": logService.Delete(body.IDs)})
+	})
+
+	r.GET("/api/logs/assets/:log_id/:file", func(c *gin.Context) {
+		if !requireAuthKeyWithQuery(c, authKey, true) {
+			return
+		}
+		data, mimeType, ok := logService.ReadImageAsset(
+			strings.TrimSpace(c.Param("log_id")),
+			strings.TrimSpace(c.Param("file")),
+		)
+		if !ok {
+			c.JSON(404, gin.H{"error": "log asset not found"})
+			return
+		}
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		c.Data(200, mimeType, data)
 	})
 
 	// CPA endpoints

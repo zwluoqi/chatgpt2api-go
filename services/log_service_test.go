@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,8 +53,8 @@ func TestLogServiceAddListDelete(t *testing.T) {
 		t.Fatalf("expected 1 remaining, got %d", len(remaining))
 	}
 
-	if !strings.HasSuffix(filepath.Clean(svc.path), "logs.jsonl") {
-		t.Errorf("unexpected log path: %s", svc.path)
+	if !strings.HasSuffix(filepath.Clean(svc.dir), "logs") {
+		t.Errorf("unexpected log dir: %s", svc.dir)
 	}
 }
 
@@ -102,9 +103,31 @@ func TestLoggedCallRecordsImages(t *testing.T) {
 	if first["mime"] != "image/png" || first["name"] != "in.png" {
 		t.Errorf("unexpected input image meta: %+v", first)
 	}
+	if strings.TrimSpace(fmt.Sprintf("%v", first["file"])) == "" {
+		t.Fatalf("expected input image stored as file reference, got %+v", first)
+	}
+	if _, ok := first["b64"]; ok {
+		t.Fatalf("expected input image b64 omitted from log detail, got %+v", first)
+	}
 	out, ok := items[0].Detail["output_images"].([]any)
 	if !ok || len(out) != 2 {
 		t.Fatalf("expected 2 output images (empty filtered), got %v", items[0].Detail["output_images"])
+	}
+
+	entryJSON, err := os.ReadFile(filepath.Join(svc.entryDir(items[0].ID), logEntryFile))
+	if err != nil {
+		t.Fatalf("expected entry.json readable, got %v", err)
+	}
+	if strings.Contains(string(entryJSON), "b64") {
+		t.Fatalf("expected entry.json without inline base64 payload, got %s", string(entryJSON))
+	}
+
+	asset, mimeType, ok := svc.ReadImageAsset(items[0].ID, fmt.Sprintf("%v", first["file"]))
+	if !ok {
+		t.Fatalf("expected input image asset readable")
+	}
+	if mimeType != "image/png" || len(asset) == 0 {
+		t.Fatalf("unexpected input image asset meta: mime=%s len=%d", mimeType, len(asset))
 	}
 }
 
@@ -130,7 +153,7 @@ func TestLoggedCallChatCompletionOutputExtract(t *testing.T) {
 		t.Fatalf("expected 2 output images extracted from markdown, got %d", len(out))
 	}
 	second, _ := out[1].(map[string]any)
-	if second["mime"] != "image/jpeg" || second["b64"] != "BBBB" {
+	if second["mime"] != "image/jpeg" || strings.TrimSpace(fmt.Sprintf("%v", second["file"])) == "" {
 		t.Errorf("unexpected second output: %+v", second)
 	}
 }

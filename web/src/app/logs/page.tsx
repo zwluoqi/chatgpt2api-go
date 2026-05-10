@@ -29,6 +29,8 @@ import {
 } from "@/components/ui/select";
 import { deleteLogs, fetchLogs, type LogEntry, type LogImage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import webConfig from "@/constants/common-env";
+import { getStoredAuthKey } from "@/store/auth";
 
 const typeOptions = [
   { label: "全部类型", value: "all" },
@@ -72,7 +74,8 @@ function getImages(detail: Record<string, unknown>, key: string): LogImage[] {
     }
     const record = item as Record<string, unknown>;
     const b64 = typeof record.b64 === "string" ? record.b64.trim() : "";
-    if (!b64) {
+    const file = typeof record.file === "string" ? record.file.trim() : "";
+    if (!b64 && !file) {
       return [];
     }
     return [
@@ -80,13 +83,19 @@ function getImages(detail: Record<string, unknown>, key: string): LogImage[] {
         mime: typeof record.mime === "string" && record.mime.trim() ? record.mime : "image/png",
         name: typeof record.name === "string" ? record.name : "",
         b64,
+        file,
       },
     ];
   });
 }
 
-function buildImageSrc(image: LogImage) {
-  return `data:${image.mime || "image/png"};base64,${image.b64}`;
+function buildImageSrc(logId: string, image: LogImage, authKey: string) {
+  if (image.file) {
+    const baseUrl = webConfig.apiUrl.replace(/\/$/, "");
+    const search = authKey ? `?auth_key=${encodeURIComponent(authKey)}` : "";
+    return `${baseUrl}/api/logs/assets/${encodeURIComponent(logId)}/${encodeURIComponent(image.file)}${search}`;
+  }
+  return `data:${image.mime || "image/png"};base64,${image.b64 || ""}`;
 }
 
 function formatDuration(value: number | null) {
@@ -145,6 +154,7 @@ export default function LogsPage() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxImages, setLightboxImages] = useState<Array<{ id: string; src: string }>>([]);
+  const [assetAuthKey, setAssetAuthKey] = useState("");
 
   const deferredQuery = useDeferredValue(query);
   const hasInvalidDateRange = Boolean(startDate && endDate && startDate > endDate);
@@ -190,6 +200,10 @@ export default function LogsPage() {
     }
     void loadLogs();
   }, [typeFilter, startDate, endDate, limit]);
+
+  useEffect(() => {
+    void getStoredAuthKey().then((value) => setAssetAuthKey(value));
+  }, []);
 
   const filteredLogs = useMemo(() => {
     const normalizedQuery = deferredQuery.trim().toLowerCase();
@@ -263,10 +277,10 @@ export default function LogsPage() {
     }
   };
 
-  const openLightbox = (images: LogImage[], startIndex: number) => {
+  const openLightbox = (logId: string, images: LogImage[], startIndex: number) => {
     const prepared = images.map((image, index) => ({
       id: `${index}-${image.name || "image"}`,
-      src: buildImageSrc(image),
+      src: buildImageSrc(logId, image, assetAuthKey),
     }));
     setLightboxImages(prepared);
     setLightboxIndex(startIndex);
@@ -547,9 +561,13 @@ export default function LogsPage() {
                                       key={`input-${index}-${image.name}`}
                                       type="button"
                                       className="group overflow-hidden rounded-2xl border border-stone-200 bg-white text-left"
-                                      onClick={() => openLightbox(inputImages, index)}
+                                      onClick={() => openLightbox(item.id, inputImages, index)}
                                     >
-                                      <img src={buildImageSrc(image)} alt="" className="aspect-square w-full object-cover" />
+                                      <img
+                                        src={buildImageSrc(item.id, image, assetAuthKey)}
+                                        alt=""
+                                        className="aspect-square w-full object-cover"
+                                      />
                                       <div className="truncate px-3 py-2 text-xs text-stone-500 group-hover:text-stone-700">
                                         {image.name || `输入图 ${index + 1}`}
                                       </div>
@@ -572,9 +590,13 @@ export default function LogsPage() {
                                       key={`output-${index}-${image.name}`}
                                       type="button"
                                       className="group overflow-hidden rounded-2xl border border-stone-200 bg-white text-left"
-                                      onClick={() => openLightbox(outputImages, index)}
+                                      onClick={() => openLightbox(item.id, outputImages, index)}
                                     >
-                                      <img src={buildImageSrc(image)} alt="" className="aspect-square w-full object-cover" />
+                                      <img
+                                        src={buildImageSrc(item.id, image, assetAuthKey)}
+                                        alt=""
+                                        className="aspect-square w-full object-cover"
+                                      />
                                       <div className="truncate px-3 py-2 text-xs text-stone-500 group-hover:text-stone-700">
                                         {image.name || `输出图 ${index + 1}`}
                                       </div>

@@ -68,7 +68,8 @@ export type ChatCompletionsSettings = {
 export type LogImage = {
   mime: string;
   name?: string;
-  b64: string;
+  b64?: string;
+  file?: string;
 };
 
 export type LogEntry = {

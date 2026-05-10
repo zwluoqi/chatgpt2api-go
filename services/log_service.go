@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,16 +20,21 @@ import (
 )
 
 const (
-	LogTypeCall = "call"
+	LogTypeCall  = "call"
+	logEntryFile = "entry.json"
 )
 
 type LogService struct {
-	mu   sync.Mutex
-	path string
+	mu         sync.Mutex
+	dir        string
+	legacyPath string
 }
 
 func NewLogService(dataDir string) *LogService {
-	return &LogService{path: filepath.Join(dataDir, "logs.jsonl")}
+	return &LogService{
+		dir:        filepath.Join(dataDir, "logs"),
+		legacyPath: filepath.Join(dataDir, "logs.jsonl"),
+	}
 }
 
 type LogEntry struct {
@@ -36,6 +43,11 @@ type LogEntry struct {
 	Type    string         `json:"type"`
 	Summary string         `json:"summary"`
 	Detail  map[string]any `json:"detail,omitempty"`
+}
+
+type storedLogEntry struct {
+	Entry   LogEntry
+	ModTime time.Time
 }
 
 func newLogID() string {
@@ -57,24 +69,18 @@ func (s *LogService) Add(typ, summary string, detail map[string]any) {
 		Summary: summary,
 		Detail:  detail,
 	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	s.ensureMigratedLocked()
+
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return
 	}
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	if err := s.writeEntryLocked(entry); err != nil {
 		return
 	}
-	defer f.Close()
-	_, _ = f.Write(data)
-	_, _ = f.Write([]byte("\n"))
 
 	s.trimLocked(config.GetLogMaxEntries())
 }
@@ -83,23 +89,14 @@ func (s *LogService) trimLocked(maxEntries int) {
 	if maxEntries <= 0 {
 		return
 	}
-	data, err := os.ReadFile(s.path)
-	if err != nil {
+	entries := s.loadEntriesLocked()
+	if len(entries) <= maxEntries {
 		return
 	}
-	lines := strings.Split(string(data), "\n")
-	nonEmpty := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if line != "" {
-			nonEmpty = append(nonEmpty, line)
-		}
+	sortStoredLogEntries(entries)
+	for _, item := range entries[maxEntries:] {
+		_ = os.RemoveAll(s.entryDir(item.Entry.ID))
 	}
-	if len(nonEmpty) <= maxEntries {
-		return
-	}
-	kept := nonEmpty[len(nonEmpty)-maxEntries:]
-	content := strings.Join(kept, "\n") + "\n"
-	_ = os.WriteFile(s.path, []byte(content), 0o644)
 }
 
 type LogFilter struct {
@@ -120,26 +117,13 @@ func (s *LogService) List(filter LogFilter) []LogEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path)
-	if err != nil {
-		return []LogEntry{}
-	}
-	defer f.Close()
-
-	var lines [][]byte
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		raw := append([]byte(nil), scanner.Bytes()...)
-		lines = append(lines, raw)
-	}
+	s.ensureMigratedLocked()
 
 	items := make([]LogEntry, 0, filter.Limit)
-	for i := len(lines) - 1; i >= 0; i-- {
-		var entry LogEntry
-		if err := json.Unmarshal(lines[i], &entry); err != nil {
-			continue
-		}
+	entries := s.loadEntriesLocked()
+	sortStoredLogEntries(entries)
+	for _, stored := range entries {
+		entry := stored.Entry
 		if filter.Type != "" && entry.Type != filter.Type {
 			continue
 		}
@@ -179,46 +163,73 @@ func (s *LogService) Delete(ids []string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return 0
-	}
+	s.ensureMigratedLocked()
 
-	lines := strings.Split(string(data), "\n")
-	kept := make([]string, 0, len(lines))
 	removed := 0
-	for _, raw := range lines {
-		if raw == "" {
+	for id := range target {
+		dir := s.entryDir(id)
+		if _, err := os.Stat(dir); err != nil {
 			continue
 		}
-		var entry LogEntry
-		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
-			kept = append(kept, raw)
-			continue
-		}
-		if _, ok := target[entry.ID]; ok {
+		if err := os.RemoveAll(dir); err == nil {
 			removed++
-			continue
 		}
-		kept = append(kept, raw)
-	}
-	if removed == 0 {
-		return 0
-	}
-	content := strings.Join(kept, "\n")
-	if content != "" {
-		content += "\n"
-	}
-	if err := os.WriteFile(s.path, []byte(content), 0o644); err != nil {
-		return 0
 	}
 	return removed
+}
+
+func (s *LogService) ReadImageAsset(id, fileName string) ([]byte, string, bool) {
+	if s == nil {
+		return nil, "", false
+	}
+	cleanFile := filepath.Base(strings.TrimSpace(fileName))
+	if cleanFile == "" || cleanFile != strings.TrimSpace(fileName) {
+		return nil, "", false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ensureMigratedLocked()
+
+	entryPath := filepath.Join(s.entryDir(id), logEntryFile)
+	data, err := os.ReadFile(entryPath)
+	if err != nil {
+		return nil, "", false
+	}
+	var entry LogEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, "", false
+	}
+
+	mimeType := ""
+	for _, key := range []string{"input_images", "output_images"} {
+		for _, image := range normalizeLogImages(entry.Detail[key]) {
+			if image.File == cleanFile {
+				mimeType = image.Mime
+				break
+			}
+		}
+		if mimeType != "" {
+			break
+		}
+	}
+	if mimeType == "" {
+		mimeType = mime.TypeByExtension(filepath.Ext(cleanFile))
+	}
+
+	asset, err := os.ReadFile(filepath.Join(s.entryDir(id), cleanFile))
+	if err != nil || len(asset) == 0 {
+		return nil, "", false
+	}
+	return asset, mimeType, true
 }
 
 type LogImage struct {
 	Mime string `json:"mime"`
 	Name string `json:"name,omitempty"`
-	B64  string `json:"b64"`
+	B64  string `json:"b64,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 type LoggedCall struct {
@@ -455,4 +466,183 @@ func requestExcerpt(text string, limit int) string {
 		return t
 	}
 	return string(r[:limit-1]) + "…"
+}
+
+func sortStoredLogEntries(items []storedLogEntry) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Entry.Time != items[j].Entry.Time {
+			return items[i].Entry.Time > items[j].Entry.Time
+		}
+		if !items[i].ModTime.Equal(items[j].ModTime) {
+			return items[i].ModTime.After(items[j].ModTime)
+		}
+		return items[i].Entry.ID > items[j].Entry.ID
+	})
+}
+
+func (s *LogService) entryDir(id string) string {
+	return filepath.Join(s.dir, id)
+}
+
+func (s *LogService) writeEntryLocked(entry LogEntry) error {
+	if err := os.MkdirAll(s.entryDir(entry.ID), 0o755); err != nil {
+		return err
+	}
+	stored := entry
+	stored.Detail = s.prepareDetailForStorageLocked(entry.ID, entry.Detail)
+	data, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.entryDir(entry.ID), logEntryFile), data, 0o644)
+}
+
+func (s *LogService) prepareDetailForStorageLocked(id string, detail map[string]any) map[string]any {
+	if len(detail) == 0 {
+		return detail
+	}
+	next := make(map[string]any, len(detail))
+	for key, value := range detail {
+		next[key] = value
+	}
+	for key, prefix := range map[string]string{
+		"input_images":  "input",
+		"output_images": "output",
+	} {
+		images := normalizeLogImages(next[key])
+		if len(images) == 0 {
+			continue
+		}
+		stored := make([]LogImage, 0, len(images))
+		for index, image := range images {
+			current := image
+			if strings.TrimSpace(image.B64) != "" {
+				if fileName, ok := s.writeImageAssetLocked(id, prefix, index, image.Mime, image.B64); ok {
+					current.File = fileName
+					current.B64 = ""
+				}
+			}
+			stored = append(stored, current)
+		}
+		next[key] = stored
+	}
+	return next
+}
+
+func (s *LogService) writeImageAssetLocked(id, prefix string, index int, mimeType, b64 string) (string, bool) {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil || len(decoded) == 0 {
+		return "", false
+	}
+	fileName := fmt.Sprintf("%s-%03d%s", prefix, index+1, imageFileExtension(mimeType))
+	if err := os.WriteFile(filepath.Join(s.entryDir(id), fileName), decoded, 0o644); err != nil {
+		return "", false
+	}
+	return fileName, true
+}
+
+func (s *LogService) loadEntriesLocked() []storedLogEntry {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+	items := make([]storedLogEntry, 0, len(entries))
+	for _, item := range entries {
+		if !item.IsDir() {
+			continue
+		}
+		entryPath := filepath.Join(s.dir, item.Name(), logEntryFile)
+		data, err := os.ReadFile(entryPath)
+		if err != nil {
+			continue
+		}
+		var entry LogEntry
+		if err := json.Unmarshal(data, &entry); err != nil {
+			continue
+		}
+		info, err := os.Stat(entryPath)
+		if err != nil {
+			continue
+		}
+		items = append(items, storedLogEntry{
+			Entry:   entry,
+			ModTime: info.ModTime(),
+		})
+	}
+	return items
+}
+
+func (s *LogService) ensureMigratedLocked() {
+	if _, err := os.Stat(s.legacyPath); err != nil {
+		return
+	}
+	f, err := os.Open(s.legacyPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
+	for scanner.Scan() {
+		raw := strings.TrimSpace(scanner.Text())
+		if raw == "" {
+			continue
+		}
+		var entry LogEntry
+		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+			continue
+		}
+		_ = s.writeEntryLocked(entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return
+	}
+	_ = os.Remove(s.legacyPath)
+}
+
+func normalizeLogImages(value any) []LogImage {
+	switch images := value.(type) {
+	case []LogImage:
+		return append([]LogImage(nil), images...)
+	case []any:
+		out := make([]LogImage, 0, len(images))
+		for _, item := range images {
+			record, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			out = append(out, LogImage{
+				Mime: strings.TrimSpace(fmt.Sprintf("%v", record["mime"])),
+				Name: strings.TrimSpace(fmt.Sprintf("%v", record["name"])),
+				B64:  strings.TrimSpace(fmt.Sprintf("%v", record["b64"])),
+				File: strings.TrimSpace(fmt.Sprintf("%v", record["file"])),
+			})
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func imageFileExtension(mimeType string) string {
+	if mimeType != "" {
+		if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {
+			return exts[0]
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
+	}
 }
