@@ -51,6 +51,8 @@ const knownDetailKeys = new Set([
   "input_images",
   "output_images",
   "error",
+  "end_reason",
+  "end_reason_label",
 ]);
 
 function getString(detail: Record<string, unknown>, key: string) {
@@ -128,6 +130,8 @@ function buildSearchText(item: LogEntry) {
     getString(detail, "model"),
     getString(detail, "request_text"),
     getString(detail, "error"),
+    getString(detail, "end_reason"),
+    getString(detail, "end_reason_label"),
     getString(detail, "account_token_prefix"),
   ]
     .join(" ")
@@ -423,6 +427,8 @@ export default function LogsPage() {
               const duration = getNumber(detail, "duration_ms");
               const requestText = getString(detail, "request_text");
               const errorText = getString(detail, "error");
+              const endReason = getString(detail, "end_reason");
+              const endReasonLabel = getString(detail, "end_reason_label");
               const tokenPrefix = getString(detail, "account_token_prefix");
               const inputImages = getImages(detail, "input_images");
               const outputImages = getImages(detail, "output_images");
@@ -460,6 +466,7 @@ export default function LogsPage() {
                                 <span>模型：{model || "—"}</span>
                                 <span>耗时：{formatDuration(duration)}</span>
                                 <span>Token 前缀：{tokenPrefix || "—"}</span>
+                                <span>结束原因：{endReasonLabel || endReason || "—"}</span>
                               </div>
                             </div>
                           </div>
@@ -542,6 +549,10 @@ export default function LogsPage() {
                                 <div>
                                   <div className="text-xs text-stone-400">耗时</div>
                                   <div className="mt-1 text-sm text-stone-700">{formatDuration(duration)}</div>
+                                </div>
+                                <div>
+                                  <div className="text-xs text-stone-400">结束原因</div>
+                                  <div className="mt-1 text-sm text-stone-700">{endReasonLabel || endReason || "—"}</div>
                                 </div>
                               </div>
                             </section>

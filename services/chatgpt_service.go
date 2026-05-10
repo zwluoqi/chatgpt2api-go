@@ -281,6 +281,30 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d", e.StatusCode)
 }
 
+func newImageHTTPError(err error) *HTTPError {
+	if err == nil {
+		return &HTTPError{StatusCode: 502, Detail: map[string]any{"error": "image generation failed"}}
+	}
+	detail := map[string]any{"error": err.Error()}
+	if imgErr, ok := err.(*ImageGenerationError); ok {
+		status := imgErr.StatusCode
+		if status <= 0 {
+			status = 502
+		}
+		if imgErr.ErrorType != "" {
+			detail["type"] = imgErr.ErrorType
+		}
+		if imgErr.Code != "" {
+			detail["code"] = imgErr.Code
+		}
+		if imgErr.Reason != "" {
+			detail["reason"] = imgErr.Reason
+		}
+		return &HTTPError{StatusCode: status, Detail: detail}
+	}
+	return &HTTPError{StatusCode: 502, Detail: detail}
+}
+
 func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[string]any, *HTTPError) {
 	if !IsImageChatRequest(body) {
 		return nil, &HTTPError{
@@ -325,7 +349,7 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 	}
 
 	if genErr != nil {
-		return nil, &HTTPError{StatusCode: 502, Detail: map[string]any{"error": genErr.Error()}}
+		return nil, newImageHTTPError(genErr)
 	}
 
 	return BuildChatImageCompletion(model, prompt, imageResult), nil
@@ -374,7 +398,7 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 	}
 
 	if genErr != nil {
-		return nil, &HTTPError{StatusCode: 502, Detail: map[string]any{"error": genErr.Error()}}
+		return nil, newImageHTTPError(genErr)
 	}
 
 	data, _ := imageResult["data"].([]any)

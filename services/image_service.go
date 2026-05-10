@@ -32,10 +32,26 @@ type ImageGenerationError struct {
 	StatusCode int
 	ErrorType  string
 	Code       string
+	Reason     string
+	Meta       map[string]any
 }
 
 func (e *ImageGenerationError) Error() string {
 	return e.Message
+}
+
+func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued bool) map[string]any {
+	meta := map[string]any{
+		"upstream_conversation_id": state.ConversationID,
+		"waited_for_result":        waitedForResult,
+		"waited_while_queued":      waitedWhileQueued,
+		"upstream_text_present":    strings.TrimSpace(state.Text) != "",
+		"upstream_file_count":      len(state.FileIDs),
+	}
+	if state.RejectCode != "" {
+		meta["reject_code"] = state.RejectCode
+	}
+	return meta
 }
 
 type GeneratedImage struct {
@@ -1180,6 +1196,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	fileIDs := state.FileIDs
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
+		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
 		if responseText != "" {
 			if state.Rejected {
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
@@ -1189,39 +1206,56 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,
+					Reason:     state.RejectCode,
+					Meta:       meta,
 				}
 			}
 			if IsImageQuotaExceededError(responseText) {
 				fmt.Printf("[image-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
-				return nil, &ImageGenerationError{Message: responseText}
+				return nil, &ImageGenerationError{Message: responseText, Reason: "quota_exceeded", Meta: meta}
 			}
 			if waitedForResult {
 				if waitedWhileQueued {
 					fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText, Reason: "timed_out_while_queued", Meta: meta}
 				}
 				fmt.Printf("[image-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText}
+				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText, Reason: "timed_out_while_waiting", Meta: meta}
+			}
+			if strings.TrimSpace(state.ConversationID) == "" {
+				fmt.Printf("[image-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: responseText, Reason: "missing_conversation_id", Meta: meta}
 			}
 			fmt.Printf("[image-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
-			return nil, &ImageGenerationError{Message: responseText}
+			return nil, &ImageGenerationError{Message: responseText, Reason: "upstream_text_response", Meta: meta}
 		}
 		if waitedForResult {
 			if waitedWhileQueued {
 				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued"}
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued", Reason: "timed_out_while_queued", Meta: meta}
 			}
 			fmt.Printf("[image-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-			return nil, &ImageGenerationError{Message: "image generation timed out while waiting"}
+			return nil, &ImageGenerationError{Message: "image generation timed out while waiting", Reason: "timed_out_while_waiting", Meta: meta}
+		}
+		if strings.TrimSpace(state.ConversationID) == "" {
+			fmt.Printf("[image-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)
+			return nil, &ImageGenerationError{Message: "no image returned from upstream", Reason: "missing_conversation_id", Meta: meta}
 		}
 		fmt.Printf("[image-upstream] fail token=%s... error=no image returned from upstream\n", tokenPrefix)
-		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
+		return nil, &ImageGenerationError{Message: "no image returned from upstream", Reason: "no_image_returned", Meta: meta}
 	}
 
 	downloadURL := fetchDownloadURL(s, accessToken, deviceID, state.ConversationID, fileIDs[0])
 	if downloadURL == "" {
 		fmt.Printf("[image-upstream] fail token=%s... error=failed to get download url\n", tokenPrefix)
-		return nil, &ImageGenerationError{Message: "failed to get download url"}
+		return nil, &ImageGenerationError{
+			Message: "failed to get download url",
+			Reason:  "download_url_missing",
+			Meta: map[string]any{
+				"upstream_conversation_id": state.ConversationID,
+				"upstream_file_count":      len(fileIDs),
+			},
+		}
 	}
 
 	b64, err := downloadAsBase64(s, accessToken, downloadURL)
@@ -1374,6 +1408,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	fileIDs := filterOutputFileIDs(state.FileIDs, inputFileIDs)
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
+		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
 		if responseText != "" {
 			if state.Rejected {
 				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
@@ -1383,39 +1418,56 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,
+					Reason:     state.RejectCode,
+					Meta:       meta,
 				}
 			}
 			if IsImageQuotaExceededError(responseText) {
 				fmt.Printf("[image-edit-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
-				return nil, &ImageGenerationError{Message: responseText}
+				return nil, &ImageGenerationError{Message: responseText, Reason: "quota_exceeded", Meta: meta}
 			}
 			if waitedForResult {
 				if waitedWhileQueued {
 					fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText, Reason: "timed_out_while_queued", Meta: meta}
 				}
 				fmt.Printf("[image-edit-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText}
+				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText, Reason: "timed_out_while_waiting", Meta: meta}
+			}
+			if strings.TrimSpace(state.ConversationID) == "" {
+				fmt.Printf("[image-edit-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: responseText, Reason: "missing_conversation_id", Meta: meta}
 			}
 			fmt.Printf("[image-edit-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
-			return nil, &ImageGenerationError{Message: responseText}
+			return nil, &ImageGenerationError{Message: responseText, Reason: "upstream_text_response", Meta: meta}
 		}
 		if waitedForResult {
 			if waitedWhileQueued {
 				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued"}
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued", Reason: "timed_out_while_queued", Meta: meta}
 			}
 			fmt.Printf("[image-edit-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-			return nil, &ImageGenerationError{Message: "image generation timed out while waiting"}
+			return nil, &ImageGenerationError{Message: "image generation timed out while waiting", Reason: "timed_out_while_waiting", Meta: meta}
+		}
+		if strings.TrimSpace(state.ConversationID) == "" {
+			fmt.Printf("[image-edit-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)
+			return nil, &ImageGenerationError{Message: "no image returned from upstream", Reason: "missing_conversation_id", Meta: meta}
 		}
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=no image returned from upstream\n", tokenPrefix)
-		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
+		return nil, &ImageGenerationError{Message: "no image returned from upstream", Reason: "no_image_returned", Meta: meta}
 	}
 
 	downloadURL := fetchDownloadURL(s, accessToken, deviceID, state.ConversationID, fileIDs[0])
 	if downloadURL == "" {
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=failed to get download url\n", tokenPrefix)
-		return nil, &ImageGenerationError{Message: "failed to get download url"}
+		return nil, &ImageGenerationError{
+			Message: "failed to get download url",
+			Reason:  "download_url_missing",
+			Meta: map[string]any{
+				"upstream_conversation_id": state.ConversationID,
+				"upstream_file_count":      len(fileIDs),
+			},
+		}
 	}
 
 	b64, err := downloadAsBase64(s, accessToken, downloadURL)

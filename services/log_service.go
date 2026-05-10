@@ -419,6 +419,10 @@ func (c *LoggedCall) Failure(err string) {
 	c.write("failed", "调用失败", err, nil)
 }
 
+func (c *LoggedCall) FailureWithExtra(err string, extra map[string]any) {
+	c.write("failed", "调用失败", err, extra)
+}
+
 func (c *LoggedCall) write(status, suffix, errMsg string, extra map[string]any) {
 	if c == nil || c.svc == nil || c.finished {
 		return

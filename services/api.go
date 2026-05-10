@@ -94,10 +94,91 @@ func writeImageGenerationError(c *gin.Context, err error) {
 		if imgErr.Code != "" {
 			body["code"] = imgErr.Code
 		}
+		reason := strings.TrimSpace(imgErr.Reason)
+		if reason == "" {
+			reason = strings.TrimSpace(imgErr.Code)
+		}
+		if reason != "" {
+			body["reason"] = reason
+		}
 		c.JSON(status, body)
 		return
 	}
 	c.JSON(502, gin.H{"error": err.Error()})
+}
+
+func imageEndReasonLabel(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "content_policy_violation":
+		return "内容政策拦截"
+	case "image_generation_rejected":
+		return "上游拒绝生成"
+	case "quota_exceeded":
+		return "图片额度已用尽"
+	case "timed_out_while_queued":
+		return "排队超时"
+	case "timed_out_while_waiting":
+		return "等待结果超时"
+	case "missing_conversation_id":
+		return "上游未返回会话 ID"
+	case "no_image_returned":
+		return "上游未返回图片"
+	case "download_url_missing":
+		return "未拿到图片下载地址"
+	case "upstream_text_response":
+		return "上游返回了文本而非图片"
+	default:
+		return ""
+	}
+}
+
+func imageErrorLogExtra(err error) map[string]any {
+	imgErr, ok := err.(*ImageGenerationError)
+	if !ok {
+		return nil
+	}
+
+	extra := map[string]any{}
+	reason := strings.TrimSpace(imgErr.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(imgErr.Code)
+	}
+	if reason != "" {
+		extra["end_reason"] = reason
+		if label := imageEndReasonLabel(reason); label != "" {
+			extra["end_reason_label"] = label
+		}
+	}
+	if imgErr.Code != "" {
+		extra["error_code"] = imgErr.Code
+	}
+	for k, v := range imgErr.Meta {
+		extra[k] = v
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
+}
+
+func httpErrorLogExtra(err *HTTPError) map[string]any {
+	if err == nil {
+		return nil
+	}
+	extra := map[string]any{}
+	if reason, ok := err.Detail["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		extra["end_reason"] = reason
+		if label := imageEndReasonLabel(reason); label != "" {
+			extra["end_reason_label"] = label
+		}
+	}
+	if code, ok := err.Detail["code"].(string); ok && strings.TrimSpace(code) != "" {
+		extra["error_code"] = code
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
 }
 
 func summarizeImageChatRequest(body map[string]any) string {
@@ -529,7 +610,7 @@ func CreateApp(
 		prompt := MergePromptWithSize(body.Prompt, body.Size)
 		result, err := chatGPTService.GenerateWithPool(prompt, body.Model, body.N)
 		if err != nil {
-			call.Failure(err.Error())
+			call.FailureWithExtra(err.Error(), imageErrorLogExtra(err))
 			writeImageGenerationError(c, err)
 			return
 		}
@@ -612,7 +693,7 @@ func CreateApp(
 		call.AddInputRequestImages(images)
 		result, genErr := chatGPTService.EditWithPool(prompt, images, model, n)
 		if genErr != nil {
-			call.Failure(genErr.Error())
+			call.FailureWithExtra(genErr.Error(), imageErrorLogExtra(genErr))
 			writeImageGenerationError(c, genErr)
 			return
 		}
@@ -643,7 +724,7 @@ func CreateApp(
 		if httpErr != nil {
 			fmt.Printf("[chat-completions] reject status=%d error=%s %s\n",
 				httpErr.StatusCode, httpErr.Error(), summarizeImageChatRequest(body))
-			call.Failure(httpErr.Error())
+			call.FailureWithExtra(httpErr.Error(), httpErrorLogExtra(httpErr))
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}
@@ -674,7 +755,7 @@ func CreateApp(
 		if httpErr != nil {
 			fmt.Printf("[responses] reject status=%d error=%s %s\n",
 				httpErr.StatusCode, httpErr.Error(), summarizeResponseRequest(body))
-			call.Failure(httpErr.Error())
+			call.FailureWithExtra(httpErr.Error(), httpErrorLogExtra(httpErr))
 			c.JSON(httpErr.StatusCode, httpErr.Detail)
 			return
 		}

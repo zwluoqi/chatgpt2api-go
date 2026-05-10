@@ -676,6 +676,74 @@ func TestImageGenerationReturnsStructuredPolicyError(t *testing.T) {
 	if response["type"] != "invalid_request_error" {
 		t.Fatalf("type = %v, want invalid_request_error", response["type"])
 	}
+	if response["reason"] != "content_policy_violation" {
+		t.Fatalf("reason = %v, want content_policy_violation", response["reason"])
+	}
+}
+
+func TestImageGenerationLogsStructuredEndReason(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		return nil, &ImageGenerationError{
+			Message: "upstream returned prompt echo",
+			Reason:  "missing_conversation_id",
+			Meta: map[string]any{
+				"waited_for_result":        false,
+				"waited_while_queued":      false,
+				"upstream_conversation_id": "",
+			},
+		}
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "draw a cat",
+		"model":  "gpt-image-1",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	req, _ = http.NewRequest("GET", srv.URL+"/api/logs?limit=10", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := payload["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("expected at least one log item")
+	}
+	first, _ := items[0].(map[string]any)
+	detail, _ := first["detail"].(map[string]any)
+	if detail["end_reason"] != "missing_conversation_id" {
+		t.Fatalf("end_reason = %v, want missing_conversation_id", detail["end_reason"])
+	}
+	if detail["end_reason_label"] != "上游未返回会话 ID" {
+		t.Fatalf("end_reason_label = %v, want 上游未返回会话 ID", detail["end_reason_label"])
+	}
+	if detail["waited_for_result"] != false {
+		t.Fatalf("waited_for_result = %v, want false", detail["waited_for_result"])
+	}
 }
 
 func TestImageGenerationAppendsSizeToPrompt(t *testing.T) {
