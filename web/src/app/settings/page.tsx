@@ -48,6 +48,7 @@ import {
   type CPARemoteFile,
 } from "@/lib/api";
 import { ChatCompletionsSettingsCard } from "./components/chat-completions-settings-card";
+import { ImagePollTimeoutSettingsCard } from "./components/image-poll-timeout-settings-card";
 import { ProxySettingsCard } from "./components/proxy-settings-card";
 
 const PAGE_SIZE_OPTIONS = ["50", "100", "200"] as const;
@@ -307,6 +308,8 @@ export default function SettingsPage() {
 
       <section className="space-y-6">
         <ChatCompletionsSettingsCard />
+
+        <ImagePollTimeoutSettingsCard />
 
         <ProxySettingsCard />
 

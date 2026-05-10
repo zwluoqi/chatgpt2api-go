@@ -65,6 +65,10 @@ export type ChatCompletionsSettings = {
   enabled: boolean;
 };
 
+export type ImagePollTimeoutSettings = {
+  seconds: number;
+};
+
 export type LogImage = {
   mime: string;
   name?: string;
@@ -203,6 +207,17 @@ export async function updateChatCompletionsSettings(enabled: boolean) {
   return httpRequest<ChatCompletionsSettings>("/api/chat-completions", {
     method: "POST",
     body: { enabled },
+  });
+}
+
+export async function fetchImagePollTimeoutSettings() {
+  return httpRequest<ImagePollTimeoutSettings>("/api/image-poll-timeout");
+}
+
+export async function updateImagePollTimeoutSettings(seconds: number) {
+  return httpRequest<ImagePollTimeoutSettings>("/api/image-poll-timeout", {
+    method: "POST",
+    body: { seconds },
   });
 }
 

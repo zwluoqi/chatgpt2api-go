@@ -28,7 +28,10 @@ const (
 )
 
 type ImageGenerationError struct {
-	Message string
+	Message    string
+	StatusCode int
+	ErrorType  string
+	Code       string
 }
 
 func (e *ImageGenerationError) Error() string {
@@ -580,6 +583,8 @@ type sseResult struct {
 	FileIDs        []string
 	Text           string
 	Queued         bool
+	Rejected       bool
+	RejectCode     string
 }
 
 func isImageQueuedMessage(text string) bool {
@@ -592,6 +597,51 @@ func isImageQueuedMessage(text string) bool {
 		strings.Contains(lower, "we'll notify you when") ||
 		strings.Contains(lower, "image is taking") ||
 		strings.Contains(lower, "high demand")
+}
+
+func detectImageRejectCode(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return ""
+	}
+
+	contentPolicyPatterns := []string{
+		"内容政策",
+		"违反了我们的内容政策",
+		"违反我们的内容政策",
+		"content policy",
+		"violates our content policy",
+		"may violate our content policy",
+		"policy violation",
+	}
+	for _, pattern := range contentPolicyPatterns {
+		if strings.Contains(lower, pattern) {
+			return "content_policy_violation"
+		}
+	}
+
+	rejectedPatterns := []string{
+		"不能按原要求生成",
+		"不能帮助生成",
+		"我不能按原要求",
+		"我不能生成",
+		"无法按原要求生成",
+		"sorry",
+		"i can't generate",
+		"i cannot generate",
+		"i can't help with that",
+		"i cannot help with that",
+		"cannot comply",
+		"can't comply",
+		"not able to generate",
+	}
+	for _, pattern := range rejectedPatterns {
+		if strings.Contains(lower, pattern) {
+			return "image_generation_rejected"
+		}
+	}
+
+	return ""
 }
 
 func parseSSE(resp *fhttp.Response) sseResult {
@@ -683,11 +733,14 @@ func parseSSE(resp *fhttp.Response) sseResult {
 	}
 
 	fullText := strings.Join(textParts, "")
+	rejectCode := detectImageRejectCode(fullText)
 	return sseResult{
 		ConversationID: conversationID,
 		FileIDs:        fileIDs,
 		Text:           fullText,
 		Queued:         isImageQueuedMessage(fullText),
+		Rejected:       rejectCode != "",
+		RejectCode:     rejectCode,
 	}
 }
 
@@ -953,7 +1006,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	fileIDs := parsed.FileIDs
 	responseText := strings.TrimSpace(parsed.Text)
 
-	if parsed.ConversationID != "" && len(fileIDs) == 0 {
+	if parsed.ConversationID != "" && len(fileIDs) == 0 && !parsed.Rejected {
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if parsed.Queued {
 			fmt.Printf("[image-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
@@ -964,6 +1017,16 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 
 	if len(fileIDs) == 0 {
 		if responseText != "" {
+			if parsed.Rejected {
+				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
+					tokenPrefix, parsed.RejectCode, truncate(responseText, 200))
+				return nil, &ImageGenerationError{
+					Message:    responseText,
+					StatusCode: 400,
+					ErrorType:  "invalid_request_error",
+					Code:       parsed.RejectCode,
+				}
+			}
 			if parsed.Queued {
 				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
 				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}
@@ -1118,7 +1181,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	fileIDs := filterOutputFileIDs(parsed.FileIDs, inputFileIDs)
 	responseText := strings.TrimSpace(parsed.Text)
 
-	if parsed.ConversationID != "" && len(fileIDs) == 0 {
+	if parsed.ConversationID != "" && len(fileIDs) == 0 && !parsed.Rejected {
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if parsed.Queued {
 			fmt.Printf("[image-edit-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
@@ -1130,6 +1193,16 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 
 	if len(fileIDs) == 0 {
 		if responseText != "" {
+			if parsed.Rejected {
+				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
+					tokenPrefix, parsed.RejectCode, truncate(responseText, 200))
+				return nil, &ImageGenerationError{
+					Message:    responseText,
+					StatusCode: 400,
+					ErrorType:  "invalid_request_error",
+					Code:       parsed.RejectCode,
+				}
+			}
 			if parsed.Queued {
 				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
 				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}

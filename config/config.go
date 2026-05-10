@@ -282,6 +282,35 @@ func GetInsecureSkipVerify() bool {
 	return Config.InsecureSkipVerify
 }
 
+func UpdateImagePollTimeoutSecs(seconds int) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if Config == nil {
+		return fmt.Errorf("config is not initialized")
+	}
+	if seconds <= 0 {
+		return fmt.Errorf("image poll timeout secs must be greater than 0")
+	}
+
+	rawConfig, err := readRawConfig(Config.ConfigFile)
+	if err != nil {
+		return err
+	}
+	rawConfig["image-poll-timeout-secs"] = seconds
+
+	data, err := json.MarshalIndent(rawConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode config.json: %w", err)
+	}
+	if err := os.WriteFile(Config.ConfigFile, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("failed to write config.json: %w", err)
+	}
+
+	Config.ImagePollTimeoutSecs = seconds
+	return nil
+}
+
 func UpdateProxyURL(proxyURL string) error {
 	configMu.Lock()
 	defer configMu.Unlock()

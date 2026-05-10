@@ -1,8 +1,12 @@
 package services
 
 import (
+	"io"
+	"strings"
 	"testing"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
 )
 
 func TestGetImageDimensionsPNG(t *testing.T) {
@@ -141,5 +145,43 @@ func TestTruncate(t *testing.T) {
 	}
 	if truncate("hi", 10) != "hi" {
 		t.Errorf("truncate should not change shorter strings")
+	}
+}
+
+func TestDetectImageRejectCode(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{"非常抱歉，该提示可能违反了我们的内容政策。", "content_policy_violation"},
+		{"Sorry, this may violate our content policy.", "content_policy_violation"},
+		{"你的描述里涉及了这种元素，所以我不能按原要求生成。", "image_generation_rejected"},
+		{"I can't generate that as requested.", "image_generation_rejected"},
+		{"正在处理图片，目前有很多人在创建图片。", ""},
+	}
+
+	for _, tt := range tests {
+		if got := detectImageRejectCode(tt.text); got != tt.want {
+			t.Errorf("detectImageRejectCode(%q) = %q, want %q", tt.text, got, tt.want)
+		}
+	}
+}
+
+func TestParseSSEReturnsRejectedFlag(t *testing.T) {
+	body := "data: {\"conversation_id\":\"conv_1\",\"message\":{\"content\":{\"content_type\":\"text\",\"parts\":[\"非常抱歉，该提示可能违反了我们的内容政策。\"]}}}\n\n"
+	resp := &fhttp.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	parsed := parseSSE(resp)
+
+	if !parsed.Rejected {
+		t.Fatal("expected rejected result")
+	}
+	if parsed.RejectCode != "content_policy_violation" {
+		t.Fatalf("RejectCode = %q, want content_policy_violation", parsed.RejectCode)
+	}
+	if !strings.Contains(parsed.Text, "内容政策") {
+		t.Fatalf("Text = %q, want policy message", parsed.Text)
 	}
 }

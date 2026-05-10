@@ -348,6 +348,64 @@ func TestChatCompletionsDisabled(t *testing.T) {
 	}
 }
 
+func TestImagePollTimeoutSettingsCRUD(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+	client := &http.Client{}
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/image-poll-timeout", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getBody map[string]any
+	json.NewDecoder(resp.Body).Decode(&getBody)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if toInt(getBody["seconds"]) != 180 {
+		t.Fatalf("seconds = %v, want 180", getBody["seconds"])
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{"seconds": 300})
+	req, _ = http.NewRequest("POST", srv.URL+"/api/image-poll-timeout", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updateResp map[string]any
+	json.NewDecoder(resp.Body).Decode(&updateResp)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if toInt(updateResp["seconds"]) != 300 {
+		t.Fatalf("seconds = %v, want 300", updateResp["seconds"])
+	}
+}
+
+func TestImagePollTimeoutSettingsRejectInvalidValue(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	updateBody, _ := json.Marshal(map[string]any{"seconds": 0})
+	req, _ := http.NewRequest("POST", srv.URL+"/api/image-poll-timeout", bytes.NewReader(updateBody))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestChatCompletionsStreamResponse(t *testing.T) {
 	srv, authKey, accountService := setupTestAppWithAccountService(t)
 	defer srv.Close()
@@ -568,6 +626,55 @@ func TestImageGenerationQuotaExceededMarksAccountLimited(t *testing.T) {
 	}
 	if account["restore_at"] == nil {
 		t.Fatal("restore_at should be set")
+	}
+}
+
+func TestImageGenerationReturnsStructuredPolicyError(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		return nil, &ImageGenerationError{
+			Message:    "非常抱歉，该提示可能违反了我们的内容政策。",
+			StatusCode: 400,
+			ErrorType:  "invalid_request_error",
+			Code:       "content_policy_violation",
+		}
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "draw a cat",
+		"model":  "gpt-image-1",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["code"] != "content_policy_violation" {
+		t.Fatalf("code = %v, want content_policy_violation", response["code"])
+	}
+	if response["type"] != "invalid_request_error" {
+		t.Fatalf("type = %v, want invalid_request_error", response["type"])
 	}
 }
 

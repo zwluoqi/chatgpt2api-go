@@ -77,6 +77,29 @@ func requireAuthKeyWithQuery(c *gin.Context, authKey string, allowQuery bool) bo
 	return true
 }
 
+func writeImageGenerationError(c *gin.Context, err error) {
+	if err == nil {
+		c.JSON(502, gin.H{"error": "image generation failed"})
+		return
+	}
+	if imgErr, ok := err.(*ImageGenerationError); ok {
+		status := imgErr.StatusCode
+		if status <= 0 {
+			status = 502
+		}
+		body := gin.H{"error": imgErr.Error()}
+		if imgErr.ErrorType != "" {
+			body["type"] = imgErr.ErrorType
+		}
+		if imgErr.Code != "" {
+			body["code"] = imgErr.Code
+		}
+		c.JSON(status, body)
+		return
+	}
+	c.JSON(502, gin.H{"error": err.Error()})
+}
+
 func summarizeImageChatRequest(body map[string]any) string {
 	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
 	n := strings.TrimSpace(fmt.Sprintf("%v", body["n"]))
@@ -313,6 +336,31 @@ func CreateApp(
 		c.JSON(200, gin.H{"enabled": config.GetChatCompletionsEnabled()})
 	})
 
+	r.GET("/api/image-poll-timeout", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		c.JSON(200, gin.H{"seconds": config.GetImagePollTimeoutSecs()})
+	})
+
+	r.POST("/api/image-poll-timeout", func(c *gin.Context) {
+		if !requireAuthKey(c, authKey) {
+			return
+		}
+		var body struct {
+			Seconds int `json:"seconds"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request body"})
+			return
+		}
+		if err := config.UpdateImagePollTimeoutSecs(body.Seconds); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"seconds": config.GetImagePollTimeoutSecs()})
+	})
+
 	r.GET("/api/accounts", func(c *gin.Context) {
 		if !requireAuthKey(c, authKey) {
 			return
@@ -482,7 +530,7 @@ func CreateApp(
 		result, err := chatGPTService.GenerateWithPool(prompt, body.Model, body.N)
 		if err != nil {
 			call.Failure(err.Error())
-			c.JSON(502, gin.H{"error": err.Error()})
+			writeImageGenerationError(c, err)
 			return
 		}
 		call.AddOutputsFromImageData(result)
@@ -565,7 +613,7 @@ func CreateApp(
 		result, genErr := chatGPTService.EditWithPool(prompt, images, model, n)
 		if genErr != nil {
 			call.Failure(genErr.Error())
-			c.JSON(502, gin.H{"error": genErr.Error()})
+			writeImageGenerationError(c, genErr)
 			return
 		}
 		call.AddOutputsFromImageData(result)
