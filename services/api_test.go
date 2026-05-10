@@ -789,6 +789,91 @@ func TestImageGenerationAppendsSizeToPrompt(t *testing.T) {
 	}
 }
 
+func TestImageGenerationPlaceholderPromptReturnsInstruction(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		t.Fatal("generateImageResultFunc should not be called for placeholder prompt")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "你好",
+		"model":  "gpt-image-1",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["message"] != ImagePromptInstructionMessage {
+		t.Fatalf("message = %v, want instruction", response["message"])
+	}
+	data, _ := response["data"].([]any)
+	if len(data) != 0 {
+		t.Fatalf("len(data) = %d, want 0", len(data))
+	}
+}
+
+func TestImageEditPlaceholderPromptReturnsInstructionWithoutImage(t *testing.T) {
+	srv, authKey := setupTestApp(t)
+	defer srv.Close()
+
+	previous := editImageResultFunc
+	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
+		t.Fatal("editImageResultFunc should not be called for placeholder prompt")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		editImageResultFunc = previous
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/edits", &body)
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["message"] != ImagePromptInstructionMessage {
+		t.Fatalf("message = %v, want instruction", response["message"])
+	}
+}
+
 func TestImageEditAppendsSizeToPrompt(t *testing.T) {
 	srv, authKey, accountService := setupTestAppWithAccountService(t)
 	defer srv.Close()

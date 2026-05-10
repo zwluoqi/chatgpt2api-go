@@ -306,16 +306,19 @@ func newImageHTTPError(err error) *HTTPError {
 }
 
 func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[string]any, *HTTPError) {
+	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+	if model == "" || model == "<nil>" {
+		model = "gpt-image-1"
+	}
+	if prompt := ExtractChatPrompt(body); IsImagePromptPlaceholder(prompt) {
+		return BuildChatTextCompletion(model, ImagePromptInstructionMessage), nil
+	}
+
 	if !IsImageChatRequest(body) {
 		return nil, &HTTPError{
 			StatusCode: 400,
 			Detail:     map[string]any{"error": "only image generation requests are supported on this endpoint"},
 		}
-	}
-
-	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
-	if model == "" || model == "<nil>" {
-		model = "gpt-image-1"
 	}
 
 	n, err := ParseImageCount(body["n"])
@@ -356,6 +359,14 @@ func (svc *ChatGPTService) CreateImageCompletion(body map[string]any) (map[strin
 }
 
 func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, *HTTPError) {
+	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
+	if model == "" || model == "<nil>" {
+		model = "gpt-5"
+	}
+	if prompt := ExtractResponsePrompt(body["input"]); IsImagePromptPlaceholder(prompt) {
+		return BuildResponseText(model, ImagePromptInstructionMessage), nil
+	}
+
 	if stream, ok := body["stream"].(bool); ok && stream {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": "stream is not supported"}}
 	}
@@ -381,11 +392,6 @@ func (svc *ChatGPTService) CreateResponse(body map[string]any) (map[string]any, 
 	}
 	if len(images) > MaxEditInputImages {
 		return nil, &HTTPError{StatusCode: 400, Detail: map[string]any{"error": fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)}}
-	}
-
-	model := strings.TrimSpace(fmt.Sprintf("%v", body["model"]))
-	if model == "" || model == "<nil>" {
-		model = "gpt-5"
 	}
 
 	var imageResult map[string]any

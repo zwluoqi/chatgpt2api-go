@@ -20,11 +20,53 @@ var ImageModels = map[string]bool{
 }
 
 const MaxEditInputImages = 16
+const ImagePromptInstructionMessage = "请直接提交需要生成或编辑的图片内容描述。"
 
 type RequestImage struct {
 	Data     []byte
 	FileName string
 	MimeType string
+}
+
+func normalizeImagePromptPlaceholder(text string) string {
+	text = strings.TrimSpace(strings.ToLower(text))
+	replacer := strings.NewReplacer(
+		" ", "",
+		"\t", "",
+		"\n", "",
+		"\r", "",
+		"?", "",
+		"？", "",
+		"!", "",
+		"！", "",
+		".", "",
+		"。", "",
+		",", "",
+		"，", "",
+		"、", "",
+	)
+	return replacer.Replace(text)
+}
+
+func IsImagePromptPlaceholder(prompt string) bool {
+	normalized := normalizeImagePromptPlaceholder(prompt)
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "hi", "hello", "hey", "你好", "您好", "哈喽", "嗨", "你是谁", "你是誰":
+		return true
+	default:
+		return false
+	}
+}
+
+func BuildImagePromptInstructionResult() map[string]any {
+	return map[string]any{
+		"created": time.Now().Unix(),
+		"data":    []any{},
+		"message": ImagePromptInstructionMessage,
+	}
 }
 
 func IsImageChatRequest(body map[string]any) bool {
@@ -511,6 +553,60 @@ func BuildChatImageCompletion(model, prompt string, imageResult map[string]any) 
 			"prompt_tokens":     0,
 			"completion_tokens": 0,
 			"total_tokens":      0,
+		},
+	}
+}
+
+func BuildChatTextCompletion(model, content string) map[string]any {
+	return map[string]any{
+		"id":      fmt.Sprintf("chatcmpl-%s", uuid.New().String()),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []any{
+			map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     0,
+			"completion_tokens": 0,
+			"total_tokens":      0,
+		},
+	}
+}
+
+func BuildResponseText(model, content string) map[string]any {
+	return map[string]any{
+		"id":                  fmt.Sprintf("resp_%s", uuid.New().String()),
+		"object":              "response",
+		"created_at":          time.Now().Unix(),
+		"model":               model,
+		"status":              "completed",
+		"parallel_tool_calls": true,
+		"output": []any{
+			map[string]any{
+				"id":     "msg_1",
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []any{
+					map[string]any{
+						"type": "output_text",
+						"text": content,
+					},
+				},
+			},
+		},
+		"usage": map[string]any{
+			"input_tokens":  0,
+			"output_tokens": 0,
+			"total_tokens":  0,
 		},
 	}
 }

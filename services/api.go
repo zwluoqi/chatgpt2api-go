@@ -607,6 +607,15 @@ func CreateApp(
 			return
 		}
 		call := logService.NewCall("/v1/images/generations", body.Model, "文生图", body.Prompt)
+		if IsImagePromptPlaceholder(body.Prompt) {
+			result := BuildImagePromptInstructionResult()
+			call.Success(map[string]any{
+				"end_reason":       "prompt_instruction",
+				"end_reason_label": "提示请求画图内容",
+			})
+			c.JSON(200, result)
+			return
+		}
 		prompt := MergePromptWithSize(body.Prompt, body.Size)
 		result, err := chatGPTService.GenerateWithPool(prompt, body.Model, body.N)
 		if err != nil {
@@ -639,6 +648,15 @@ func CreateApp(
 			return
 		}
 		call := logService.NewCall("/v1/images/edits", model, "图生图", prompt)
+		if IsImagePromptPlaceholder(prompt) {
+			result := BuildImagePromptInstructionResult()
+			call.Success(map[string]any{
+				"end_reason":       "prompt_instruction",
+				"end_reason_label": "提示请求画图内容",
+			})
+			c.JSON(200, result)
+			return
+		}
 		prompt = MergePromptWithSize(prompt, size)
 
 		form, err := c.MultipartForm()

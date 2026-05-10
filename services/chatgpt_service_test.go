@@ -266,6 +266,75 @@ func TestCreateImageCompletionAppendsSizeToPrompt(t *testing.T) {
 	}
 }
 
+func TestCreateImageCompletionPlaceholderPromptReturnsInstruction(t *testing.T) {
+	as := tempAccountService(t)
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		t.Fatal("generateImageResultFunc should not be called for placeholder prompt")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	svc := NewChatGPTService(as)
+	result, httpErr := svc.CreateImageCompletion(map[string]any{
+		"model": "gpt-4o",
+		"messages": []any{
+			map[string]any{
+				"role":    "user",
+				"content": "hi",
+			},
+		},
+	})
+	if httpErr != nil {
+		t.Fatalf("CreateImageCompletion returned error: %v", httpErr)
+	}
+	choices, _ := result["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("len(choices) = %d, want 1", len(choices))
+	}
+	choice, _ := choices[0].(map[string]any)
+	message, _ := choice["message"].(map[string]any)
+	if message["content"] != ImagePromptInstructionMessage {
+		t.Fatalf("content = %v, want instruction", message["content"])
+	}
+}
+
+func TestCreateResponsePlaceholderPromptReturnsInstruction(t *testing.T) {
+	as := tempAccountService(t)
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		t.Fatal("generateImageResultFunc should not be called for placeholder prompt")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	svc := NewChatGPTService(as)
+	result, httpErr := svc.CreateResponse(map[string]any{
+		"model": "gpt-5",
+		"input": "你是谁",
+	})
+	if httpErr != nil {
+		t.Fatalf("CreateResponse returned error: %v", httpErr)
+	}
+	output, _ := result["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("len(output) = %d, want 1", len(output))
+	}
+	item, _ := output[0].(map[string]any)
+	content, _ := item["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("len(content) = %d, want 1", len(content))
+	}
+	text, _ := content[0].(map[string]any)
+	if text["text"] != ImagePromptInstructionMessage {
+		t.Fatalf("text = %v, want instruction", text["text"])
+	}
+}
+
 func TestCreateImageCompletionDownloadsRemoteImageURL(t *testing.T) {
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")

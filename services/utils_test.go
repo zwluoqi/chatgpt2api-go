@@ -32,6 +32,27 @@ func TestIsImageChatRequest(t *testing.T) {
 	}
 }
 
+func TestIsImagePromptPlaceholder(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"hi", true},
+		{"Hello!", true},
+		{"你好。", true},
+		{"你是谁？", true},
+		{"生成一张猫的图片", false},
+		{"hello，生成一张猫的图片", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		if got := IsImagePromptPlaceholder(tt.input); got != tt.want {
+			t.Errorf("IsImagePromptPlaceholder(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestExtractChatPrompt(t *testing.T) {
 	tests := []struct {
 		name     string
