@@ -65,6 +65,28 @@ export type ChatCompletionsSettings = {
   enabled: boolean;
 };
 
+export type LogImage = {
+  mime: string;
+  name?: string;
+  b64: string;
+};
+
+export type LogEntry = {
+  id: string;
+  time: string;
+  type: string;
+  summary: string;
+  detail?: Record<string, unknown>;
+};
+
+type LogListResponse = {
+  items: LogEntry[];
+};
+
+type LogDeleteResponse = {
+  removed: number;
+};
+
 export async function login(authKey: string) {
   const normalizedAuthKey = String(authKey || "").trim();
   return httpRequest<{ ok: boolean }>("/auth/login", {
@@ -180,6 +202,37 @@ export async function updateChatCompletionsSettings(enabled: boolean) {
   return httpRequest<ChatCompletionsSettings>("/api/chat-completions", {
     method: "POST",
     body: { enabled },
+  });
+}
+
+export async function fetchLogs(params?: {
+  type?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+}) {
+  const search = new URLSearchParams();
+  if (params?.type) {
+    search.set("type", params.type);
+  }
+  if (params?.startDate) {
+    search.set("start_date", params.startDate);
+  }
+  if (params?.endDate) {
+    search.set("end_date", params.endDate);
+  }
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    search.set("limit", String(params.limit));
+  }
+
+  const query = search.toString();
+  return httpRequest<LogListResponse>(query ? `/api/logs?${query}` : "/api/logs");
+}
+
+export async function deleteLogs(ids: string[]) {
+  return httpRequest<LogDeleteResponse>("/api/logs/delete", {
+    method: "POST",
+    body: { ids },
   });
 }
 

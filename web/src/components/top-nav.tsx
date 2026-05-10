@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/image", label: "画图" },
   { href: "/accounts", label: "号池管理" },
+  { href: "/logs", label: "日志" },
   { href: "/settings", label: "设置" },
 ];
 
