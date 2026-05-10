@@ -60,7 +60,9 @@ func TestIsImageQuotaExceededError(t *testing.T) {
 		expected bool
 	}{
 		{"You've hit the free plan limit for image generation requests. You can create more images when the limit resets in 10 hours and 25 minutes.", true},
+		{"You've hit the free plan limit for image generations requests. You can create more images when the limit resets in 42 minutes.", true},
 		{"IMAGE GENERATION REQUESTS can create more images when the limit resets in 5 minutes.", true},
+		{"IMAGE GENERATIONS REQUESTS can create more images when the limit resets in 5 minutes.", true},
 		{"rate limit exceeded", false},
 		{"", false},
 	}
@@ -145,6 +147,24 @@ func TestTruncate(t *testing.T) {
 	}
 	if truncate("hi", 10) != "hi" {
 		t.Errorf("truncate should not change shorter strings")
+	}
+}
+
+func TestWrapImageGenerationPrompt(t *testing.T) {
+	prompt := "生成一个红色展示柜"
+	wrapped := wrapImageGenerationPrompt(prompt)
+
+	if !strings.Contains(wrapped, prompt) {
+		t.Fatalf("wrapped prompt should contain original prompt, got %q", wrapped)
+	}
+	for _, want := range []string{
+		"Do not answer with text descriptions",
+		"Do not ask the user for more details",
+		"Return the generated image result",
+	} {
+		if !strings.Contains(wrapped, want) {
+			t.Fatalf("wrapped prompt missing %q: %q", want, wrapped)
+		}
 	}
 }
 

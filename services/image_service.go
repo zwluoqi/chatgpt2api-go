@@ -254,6 +254,8 @@ func IsTokenInvalidError(message string) bool {
 func IsImageQuotaExceededError(message string) bool {
 	text := strings.ToLower(message)
 	return strings.Contains(text, "free plan limit for image generation requests") ||
+		strings.Contains(text, "free plan limit for image generations requests") ||
+		(strings.Contains(text, "image generations requests") && strings.Contains(text, "limit resets in")) ||
 		(strings.Contains(text, "image generation requests") && strings.Contains(text, "limit resets in"))
 }
 
@@ -412,6 +414,24 @@ func truncate(s string, maxLen int) string {
 	return s
 }
 
+func wrapImageGenerationPrompt(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return prompt
+	}
+	return strings.TrimSpace(fmt.Sprintf(`[SYSTEM INSTRUCTION - MUST FOLLOW]
+You are an image generation engine. Your only task is to create the requested image.
+Do not answer with text descriptions, questions, suggestions, options, analysis, or follow-up prompts.
+Do not ask the user for more details. If details are missing, make reasonable visual choices and generate the image.
+If the request references an existing image, use the provided image as context and produce the edited/generated image.
+
+[IMAGE GENERATION REQUEST]
+%s
+
+[OUTPUT REQUIREMENT]
+Return the generated image result.`, prompt))
+}
+
 func sendConversation(s *session, accessToken, deviceID, chatToken string, proofToken *string, parentMessageID, prompt, model string) (*fhttp.Response, error) {
 	headers := map[string]string{
 		"Authorization":           fmt.Sprintf("Bearer %s", accessToken),
@@ -438,7 +458,7 @@ func sendConversation(s *session, accessToken, deviceID, chatToken string, proof
 				"author": map[string]any{"role": "user"},
 				"content": map[string]any{
 					"content_type": "text",
-					"parts":        []any{prompt},
+					"parts":        []any{wrapImageGenerationPrompt(prompt)},
 				},
 				"metadata": map[string]any{
 					"attachments": []any{},
@@ -536,7 +556,7 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 		})
 	}
 
-	parts := append(imageParts, prompt)
+	parts := append(imageParts, wrapImageGenerationPrompt(prompt))
 
 	body := map[string]any{
 		"action": "next",
