@@ -154,6 +154,7 @@ func TestDetectImageRejectCode(t *testing.T) {
 		want string
 	}{
 		{"非常抱歉，该提示可能违反了我们的内容政策。", "content_policy_violation"},
+		{"非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制。如果你认为此判断有误，请重试或修改提示语。", "content_policy_violation"},
 		{"Sorry, this may violate our content policy.", "content_policy_violation"},
 		{"你的描述里涉及了这种元素，所以我不能按原要求生成。", "image_generation_rejected"},
 		{"I can't generate that as requested.", "image_generation_rejected"},
