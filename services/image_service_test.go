@@ -255,3 +255,14 @@ func TestExtractConversationStateStopsOnTerminalAssistantText(t *testing.T) {
 		t.Fatal("shouldContinuePolling returned true for terminal assistant text")
 	}
 }
+
+func TestShouldContinuePollingForPromptEchoText(t *testing.T) {
+	state := sseResult{
+		ConversationID: "conv_1",
+		Text:           `{"prompt":"生成电商主图","size":"1024x1024"}`,
+	}
+
+	if !shouldContinuePolling(state) {
+		t.Fatal("shouldContinuePolling returned false for prompt echo text")
+	}
+}

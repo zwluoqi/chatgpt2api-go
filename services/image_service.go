@@ -655,11 +655,8 @@ func isTerminalImageText(text string) bool {
 	if IsImageQuotaExceededError(text) {
 		return true
 	}
-	queued, rejected, _ := classifyImageText(text)
-	if rejected {
-		return true
-	}
-	return !queued
+	_, rejected, _ := classifyImageText(text)
+	return rejected
 }
 
 func shouldPreferAssistantText(current string, currentTS float64, candidate string, candidateTS float64) bool {
@@ -707,7 +704,7 @@ func shouldContinuePolling(result sseResult) bool {
 	if len(result.FileIDs) > 0 || result.Rejected || IsImageQuotaExceededError(result.Text) {
 		return false
 	}
-	return strings.TrimSpace(result.Text) == "" || result.Queued
+	return true
 }
 
 func isImageQueuedMessage(text string) bool {
@@ -1167,13 +1164,17 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	}
 
 	state := parseSSE(resp)
+	waitedForResult := false
+	waitedWhileQueued := state.Queued
 	if state.ConversationID != "" && shouldContinuePolling(state) {
+		waitedForResult = true
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if state.Queued {
 			fmt.Printf("[image-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
 				tokenPrefix, state.ConversationID, truncate(state.Text, 100), pollTimeout)
 		}
 		state = mergeImageResultState(state, pollImageIDs(s, accessToken, deviceID, state.ConversationID, pollTimeout))
+		waitedWhileQueued = waitedWhileQueued || state.Queued
 	}
 
 	fileIDs := state.FileIDs
@@ -1194,12 +1195,24 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 				fmt.Printf("[image-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
 				return nil, &ImageGenerationError{Message: responseText}
 			}
-			if state.Queued {
-				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+			if waitedForResult {
+				if waitedWhileQueued {
+					fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+				}
+				fmt.Printf("[image-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText}
 			}
 			fmt.Printf("[image-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
+		}
+		if waitedForResult {
+			if waitedWhileQueued {
+				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued"}
+			}
+			fmt.Printf("[image-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
+			return nil, &ImageGenerationError{Message: "image generation timed out while waiting"}
 		}
 		fmt.Printf("[image-upstream] fail token=%s... error=no image returned from upstream\n", tokenPrefix)
 		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
@@ -1345,13 +1358,17 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	}
 
 	state := parseSSE(resp)
+	waitedForResult := false
+	waitedWhileQueued := state.Queued
 	if state.ConversationID != "" && shouldContinuePolling(state) {
+		waitedForResult = true
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 		if state.Queued {
 			fmt.Printf("[image-edit-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
 				tokenPrefix, state.ConversationID, truncate(state.Text, 100), pollTimeout)
 		}
 		state = mergeImageResultState(state, pollImageIDs(s, accessToken, deviceID, state.ConversationID, pollTimeout))
+		waitedWhileQueued = waitedWhileQueued || state.Queued
 	}
 
 	fileIDs := filterOutputFileIDs(state.FileIDs, inputFileIDs)
@@ -1372,12 +1389,24 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 				fmt.Printf("[image-edit-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
 				return nil, &ImageGenerationError{Message: responseText}
 			}
-			if state.Queued {
-				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+			if waitedForResult {
+				if waitedWhileQueued {
+					fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
+				}
+				fmt.Printf("[image-edit-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText}
 			}
 			fmt.Printf("[image-edit-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
+		}
+		if waitedForResult {
+			if waitedWhileQueued {
+				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued"}
+			}
+			fmt.Printf("[image-edit-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
+			return nil, &ImageGenerationError{Message: "image generation timed out while waiting"}
 		}
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=no image returned from upstream\n", tokenPrefix)
 		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
