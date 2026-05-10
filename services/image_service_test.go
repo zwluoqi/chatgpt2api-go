@@ -168,7 +168,7 @@ func TestDetectImageRejectCode(t *testing.T) {
 }
 
 func TestParseSSEReturnsRejectedFlag(t *testing.T) {
-	body := "data: {\"conversation_id\":\"conv_1\",\"message\":{\"content\":{\"content_type\":\"text\",\"parts\":[\"非常抱歉，该提示可能违反了我们的内容政策。\"]}}}\n\n"
+	body := "data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"assistant\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"非常抱歉，该提示可能违反了我们的内容政策。\"]}}}\n\n"
 	resp := &fhttp.Response{
 		StatusCode: 200,
 		Body:       io.NopCloser(strings.NewReader(body)),
@@ -183,5 +183,75 @@ func TestParseSSEReturnsRejectedFlag(t *testing.T) {
 	}
 	if !strings.Contains(parsed.Text, "内容政策") {
 		t.Fatalf("Text = %q, want policy message", parsed.Text)
+	}
+}
+
+func TestParseSSEPrefersLatestAssistantTerminalText(t *testing.T) {
+	body := strings.Join([]string{
+		"data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"{\\\"prompt\\\":{\\\"prompt\\\":\\\"母亲节海报\\\"}}\"]}}}",
+		"data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"assistant\"},\"create_time\":1,\"content\":{\"content_type\":\"text\",\"parts\":[\"正在处理图片，目前有很多人在创建图片。\"]}}}",
+		"data: {\"conversation_id\":\"conv_1\",\"message\":{\"author\":{\"role\":\"assistant\"},\"create_time\":2,\"content\":{\"content_type\":\"text\",\"parts\":[\"You've hit the free plan limit for image generations requests. You can create more images when the limit resets in 1 hour and 7 minutes.\"]}}}",
+		"",
+	}, "\n\n")
+	resp := &fhttp.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	parsed := parseSSE(resp)
+	if strings.Contains(parsed.Text, "\"prompt\"") {
+		t.Fatalf("Text should not contain echoed prompt JSON, got %q", parsed.Text)
+	}
+	if !strings.Contains(parsed.Text, "free plan limit") {
+		t.Fatalf("Text = %q, want quota message", parsed.Text)
+	}
+	if parsed.Queued {
+		t.Fatalf("Queued = true, want false for terminal assistant text")
+	}
+}
+
+func TestExtractConversationStateStopsOnTerminalAssistantText(t *testing.T) {
+	mapping := map[string]any{
+		"msg_user": map[string]any{
+			"message": map[string]any{
+				"author": map[string]any{"role": "user"},
+				"content": map[string]any{
+					"content_type": "text",
+					"parts":        []any{"{\"prompt\":\"母亲节海报\"}"},
+				},
+				"create_time": 1.0,
+			},
+		},
+		"msg_waiting": map[string]any{
+			"message": map[string]any{
+				"author": map[string]any{"role": "assistant"},
+				"content": map[string]any{
+					"content_type": "text",
+					"parts":        []any{"正在处理图片，目前有很多人在创建图片。"},
+				},
+				"create_time": 2.0,
+			},
+		},
+		"msg_final": map[string]any{
+			"message": map[string]any{
+				"author": map[string]any{"role": "assistant"},
+				"content": map[string]any{
+					"content_type": "text",
+					"parts":        []any{"你的描述里涉及了这种元素，所以我不能按原要求生成。"},
+				},
+				"create_time": 3.0,
+			},
+		},
+	}
+
+	state := extractConversationState(mapping)
+	if !strings.Contains(state.Text, "不能按原要求生成") {
+		t.Fatalf("Text = %q, want final rejection text", state.Text)
+	}
+	if !state.Rejected {
+		t.Fatal("expected rejected state")
+	}
+	if shouldContinuePolling(state) {
+		t.Fatal("shouldContinuePolling returned true for terminal assistant text")
 	}
 }

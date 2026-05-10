@@ -191,3 +191,11 @@ func TestRequestExcerptTruncation(t *testing.T) {
 		t.Errorf("expected ellipsis at end, got %q", r[len(r)-1])
 	}
 }
+
+func TestRequestExcerptUnlimited(t *testing.T) {
+	text := "  line 1\nline  2  "
+	out := requestExcerpt(text, 0)
+	if out != "line 1 line 2" {
+		t.Fatalf("requestExcerpt(limit=0) = %q, want full normalized text", out)
+	}
+}

@@ -587,6 +587,129 @@ type sseResult struct {
 	RejectCode     string
 }
 
+func classifyImageText(text string) (bool, bool, string) {
+	text = strings.TrimSpace(text)
+	rejectCode := detectImageRejectCode(text)
+	return isImageQueuedMessage(text), rejectCode != "", rejectCode
+}
+
+func messageRole(message map[string]any) string {
+	author, _ := message["author"].(map[string]any)
+	return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", author["role"])))
+}
+
+func messageText(message map[string]any) string {
+	content, _ := message["content"].(map[string]any)
+	if content == nil {
+		return ""
+	}
+
+	contentType := strings.TrimSpace(fmt.Sprintf("%v", content["content_type"]))
+	if contentType != "text" && contentType != "multimodal_text" {
+		return ""
+	}
+
+	parts, _ := content["parts"].([]any)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	var textParts []string
+	for _, part := range parts {
+		if s, ok := part.(string); ok && strings.TrimSpace(s) != "" {
+			textParts = append(textParts, s)
+		}
+	}
+	return strings.TrimSpace(strings.Join(textParts, ""))
+}
+
+func messageTimestamp(message map[string]any) float64 {
+	for _, key := range []string{"create_time", "update_time"} {
+		switch value := message[key].(type) {
+		case float64:
+			return value
+		case float32:
+			return float64(value)
+		case int:
+			return float64(value)
+		case int64:
+			return float64(value)
+		case json.Number:
+			if f, err := value.Float64(); err == nil {
+				return f
+			}
+		case string:
+			if f, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
+				return f
+			}
+		}
+	}
+	return 0
+}
+
+func isTerminalImageText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if IsImageQuotaExceededError(text) {
+		return true
+	}
+	queued, rejected, _ := classifyImageText(text)
+	if rejected {
+		return true
+	}
+	return !queued
+}
+
+func shouldPreferAssistantText(current string, currentTS float64, candidate string, candidateTS float64) bool {
+	current = strings.TrimSpace(current)
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	if current == "" {
+		return true
+	}
+
+	currentTerminal := isTerminalImageText(current)
+	candidateTerminal := isTerminalImageText(candidate)
+	if candidateTerminal != currentTerminal {
+		return candidateTerminal
+	}
+	if candidateTS > 0 && currentTS > 0 && candidateTS != currentTS {
+		return candidateTS > currentTS
+	}
+	return len(candidate) >= len(current)
+}
+
+func applyImageTextState(result *sseResult, text string) {
+	text = strings.TrimSpace(text)
+	result.Text = text
+	result.Queued, result.Rejected, result.RejectCode = classifyImageText(text)
+}
+
+func mergeImageResultState(base, next sseResult) sseResult {
+	merged := base
+	if next.ConversationID != "" {
+		merged.ConversationID = next.ConversationID
+	}
+	if len(next.FileIDs) > 0 {
+		merged.FileIDs = next.FileIDs
+	}
+	if strings.TrimSpace(next.Text) != "" {
+		applyImageTextState(&merged, next.Text)
+	}
+	return merged
+}
+
+func shouldContinuePolling(result sseResult) bool {
+	if len(result.FileIDs) > 0 || result.Rejected || IsImageQuotaExceededError(result.Text) {
+		return false
+	}
+	return strings.TrimSpace(result.Text) == "" || result.Queued
+}
+
 func isImageQueuedMessage(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "正在处理图片") ||
@@ -647,9 +770,10 @@ func detectImageRejectCode(text string) string {
 func parseSSE(resp *fhttp.Response) sseResult {
 	defer resp.Body.Close()
 
+	result := sseResult{}
 	var fileIDs []string
-	conversationID := ""
-	var textParts []string
+	var assistantText string
+	var assistantTextTS float64
 	fileIDSet := make(map[string]bool)
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -705,43 +829,45 @@ func parseSSE(resp *fhttp.Response) sseResult {
 		}
 
 		if cid, ok := obj["conversation_id"].(string); ok && cid != "" {
-			conversationID = cid
+			result.ConversationID = cid
 		}
 
 		objType, _ := obj["type"].(string)
 		if objType == "resume_conversation_token" || objType == "message_marker" || objType == "message_stream_complete" {
 			if cid, ok := obj["conversation_id"].(string); ok && cid != "" {
-				conversationID = cid
+				result.ConversationID = cid
 			}
 		}
 
 		if data, ok := obj["v"].(map[string]any); ok {
 			if cid, ok := data["conversation_id"].(string); ok && cid != "" {
-				conversationID = cid
+				result.ConversationID = cid
 			}
 		}
 
-		if message, ok := obj["message"].(map[string]any); ok {
-			if content, ok := message["content"].(map[string]any); ok {
-				if ct, ok := content["content_type"].(string); ok && ct == "text" {
-					if parts, ok := content["parts"].([]any); ok && len(parts) > 0 {
-						textParts = append(textParts, fmt.Sprintf("%v", parts[0]))
-					}
-				}
+		for _, candidate := range []any{obj["message"], obj["v"]} {
+			message, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if inner, ok := message["message"].(map[string]any); ok {
+				message = inner
+			}
+			if messageRole(message) != "assistant" {
+				continue
+			}
+			text := messageText(message)
+			timestamp := messageTimestamp(message)
+			if shouldPreferAssistantText(assistantText, assistantTextTS, text, timestamp) {
+				assistantText = text
+				assistantTextTS = timestamp
 			}
 		}
 	}
 
-	fullText := strings.Join(textParts, "")
-	rejectCode := detectImageRejectCode(fullText)
-	return sseResult{
-		ConversationID: conversationID,
-		FileIDs:        fileIDs,
-		Text:           fullText,
-		Queued:         isImageQueuedMessage(fullText),
-		Rejected:       rejectCode != "",
-		RejectCode:     rejectCode,
-	}
+	result.FileIDs = fileIDs
+	applyImageTextState(&result, assistantText)
+	return result
 }
 
 func extractImageIDs(mapping map[string]any) []string {
@@ -796,13 +922,42 @@ func extractImageIDs(mapping map[string]any) []string {
 	return fileIDs
 }
 
-func pollImageIDs(s *session, accessToken, deviceID, conversationID string, timeout ...time.Duration) []string {
+func extractConversationState(mapping map[string]any) sseResult {
+	result := sseResult{
+		FileIDs: extractImageIDs(mapping),
+	}
+	var assistantText string
+	var assistantTextTS float64
+
+	for _, node := range mapping {
+		nodeMap, ok := node.(map[string]any)
+		if !ok {
+			continue
+		}
+		message, _ := nodeMap["message"].(map[string]any)
+		if message == nil || messageRole(message) != "assistant" {
+			continue
+		}
+		text := messageText(message)
+		timestamp := messageTimestamp(message)
+		if shouldPreferAssistantText(assistantText, assistantTextTS, text, timestamp) {
+			assistantText = text
+			assistantTextTS = timestamp
+		}
+	}
+
+	applyImageTextState(&result, assistantText)
+	return result
+}
+
+func pollImageIDs(s *session, accessToken, deviceID, conversationID string, timeout ...time.Duration) sseResult {
 	maxWait := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
 	if len(timeout) > 0 && timeout[0] > 0 {
 		maxWait = timeout[0]
 	}
 	tokenPrefix := accessToken[:min(12, len(accessToken))]
 	started := time.Now()
+	lastResult := sseResult{ConversationID: conversationID}
 	for time.Since(started) < maxWait {
 		resp, err := retry(func() (*fhttp.Response, error) {
 			return s.get(
@@ -836,11 +991,20 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 			time.Sleep(3 * time.Second)
 			continue
 		}
-		fileIDs := extractImageIDs(mapping)
-		if len(fileIDs) > 0 {
+
+		state := extractConversationState(mapping)
+		state.ConversationID = conversationID
+		lastResult = mergeImageResultState(lastResult, state)
+		if len(state.FileIDs) > 0 {
 			elapsed := time.Since(started).Truncate(time.Second)
 			fmt.Printf("[image-poll] success token=%s... conversation=%s elapsed=%s\n", tokenPrefix, conversationID, elapsed)
-			return fileIDs
+			return lastResult
+		}
+		if strings.TrimSpace(state.Text) != "" && !shouldContinuePolling(state) {
+			elapsed := time.Since(started).Truncate(time.Second)
+			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s text=%s\n",
+				tokenPrefix, conversationID, elapsed, truncate(state.Text, 200))
+			return lastResult
 		}
 		elapsed := time.Since(started).Truncate(time.Second)
 		if elapsed.Seconds() > 0 && int(elapsed.Seconds())%30 == 0 {
@@ -849,7 +1013,7 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 		time.Sleep(5 * time.Second)
 	}
 	fmt.Printf("[image-poll] timeout token=%s... conversation=%s timeout=%s\n", tokenPrefix, conversationID, maxWait)
-	return nil
+	return lastResult
 }
 
 func canonicalizeFileID(fileID string) string {
@@ -1002,34 +1166,37 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		return nil, err
 	}
 
-	parsed := parseSSE(resp)
-	fileIDs := parsed.FileIDs
-	responseText := strings.TrimSpace(parsed.Text)
-
-	if parsed.ConversationID != "" && len(fileIDs) == 0 && !parsed.Rejected {
+	state := parseSSE(resp)
+	if state.ConversationID != "" && shouldContinuePolling(state) {
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
-		if parsed.Queued {
+		if state.Queued {
 			fmt.Printf("[image-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
-				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
+				tokenPrefix, state.ConversationID, truncate(state.Text, 100), pollTimeout)
 		}
-		fileIDs = pollImageIDs(s, accessToken, deviceID, parsed.ConversationID, pollTimeout)
+		state = mergeImageResultState(state, pollImageIDs(s, accessToken, deviceID, state.ConversationID, pollTimeout))
 	}
 
+	fileIDs := state.FileIDs
+	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		if responseText != "" {
-			if parsed.Rejected {
+			if state.Rejected {
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
-					tokenPrefix, parsed.RejectCode, truncate(responseText, 200))
+					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
 					Message:    responseText,
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
-					Code:       parsed.RejectCode,
+					Code:       state.RejectCode,
 				}
 			}
-			if parsed.Queued {
+			if IsImageQuotaExceededError(responseText) {
+				fmt.Printf("[image-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
+				return nil, &ImageGenerationError{Message: responseText}
+			}
+			if state.Queued {
 				fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
 			}
 			fmt.Printf("[image-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
@@ -1038,7 +1205,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
 	}
 
-	downloadURL := fetchDownloadURL(s, accessToken, deviceID, parsed.ConversationID, fileIDs[0])
+	downloadURL := fetchDownloadURL(s, accessToken, deviceID, state.ConversationID, fileIDs[0])
 	if downloadURL == "" {
 		fmt.Printf("[image-upstream] fail token=%s... error=failed to get download url\n", tokenPrefix)
 		return nil, &ImageGenerationError{Message: "failed to get download url"}
@@ -1050,7 +1217,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		return nil, err
 	}
 
-	if parsed.Queued {
+	if state.Queued {
 		fmt.Printf("[image-upstream] success token=%s... images=1 (was queued)\n", tokenPrefix)
 	} else {
 		fmt.Printf("[image-upstream] success token=%s... images=1\n", tokenPrefix)
@@ -1172,40 +1339,42 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		return nil, err
 	}
 
-	parsed := parseSSE(resp)
 	inputFileIDs := make(map[string]bool)
 	for _, img := range uploadedImages {
 		inputFileIDs[img.FileID] = true
 	}
 
-	fileIDs := filterOutputFileIDs(parsed.FileIDs, inputFileIDs)
-	responseText := strings.TrimSpace(parsed.Text)
-
-	if parsed.ConversationID != "" && len(fileIDs) == 0 && !parsed.Rejected {
+	state := parseSSE(resp)
+	if state.ConversationID != "" && shouldContinuePolling(state) {
 		pollTimeout := time.Duration(config.GetImagePollTimeoutSecs()) * time.Second
-		if parsed.Queued {
+		if state.Queued {
 			fmt.Printf("[image-edit-upstream] queued token=%s... conversation=%s text=%s timeout=%s\n",
-				tokenPrefix, parsed.ConversationID, truncate(responseText, 100), pollTimeout)
+				tokenPrefix, state.ConversationID, truncate(state.Text, 100), pollTimeout)
 		}
-		polled := pollImageIDs(s, accessToken, deviceID, parsed.ConversationID, pollTimeout)
-		fileIDs = filterOutputFileIDs(polled, inputFileIDs)
+		state = mergeImageResultState(state, pollImageIDs(s, accessToken, deviceID, state.ConversationID, pollTimeout))
 	}
 
+	fileIDs := filterOutputFileIDs(state.FileIDs, inputFileIDs)
+	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		if responseText != "" {
-			if parsed.Rejected {
+			if state.Rejected {
 				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
-					tokenPrefix, parsed.RejectCode, truncate(responseText, 200))
+					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
 					Message:    responseText,
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
-					Code:       parsed.RejectCode,
+					Code:       state.RejectCode,
 				}
 			}
-			if parsed.Queued {
+			if IsImageQuotaExceededError(responseText) {
+				fmt.Printf("[image-edit-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
+				return nil, &ImageGenerationError{Message: responseText}
+			}
+			if state.Queued {
 				fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + truncate(responseText, 200)}
+				return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText}
 			}
 			fmt.Printf("[image-edit-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
 			return nil, &ImageGenerationError{Message: responseText}
@@ -1214,7 +1383,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		return nil, &ImageGenerationError{Message: "no image returned from upstream"}
 	}
 
-	downloadURL := fetchDownloadURL(s, accessToken, deviceID, parsed.ConversationID, fileIDs[0])
+	downloadURL := fetchDownloadURL(s, accessToken, deviceID, state.ConversationID, fileIDs[0])
 	if downloadURL == "" {
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=failed to get download url\n", tokenPrefix)
 		return nil, &ImageGenerationError{Message: "failed to get download url"}
@@ -1226,7 +1395,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		return nil, err
 	}
 
-	if parsed.Queued {
+	if state.Queued {
 		fmt.Printf("[image-edit-upstream] success token=%s... inputs=%d (was queued)\n", tokenPrefix, len(uploadedImages))
 	} else {
 		fmt.Printf("[image-edit-upstream] success token=%s... inputs=%d\n", tokenPrefix, len(uploadedImages))

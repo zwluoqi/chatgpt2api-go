@@ -434,7 +434,7 @@ func (c *LoggedCall) write(status, suffix, errMsg string, extra map[string]any) 
 		"duration_ms": int(now.Sub(c.started).Milliseconds()),
 		"status":      status,
 	}
-	if excerpt := requestExcerpt(c.requestText, 1000); excerpt != "" {
+	if excerpt := requestExcerpt(c.requestText, 0); excerpt != "" {
 		detail["request_text"] = excerpt
 	}
 	if c.tokenPrefix != "" {
@@ -461,6 +461,9 @@ func requestExcerpt(text string, limit int) string {
 		return ""
 	}
 	t = strings.Join(strings.Fields(t), " ")
+	if limit <= 0 {
+		return t
+	}
 	r := []rune(t)
 	if len(r) <= limit {
 		return t
