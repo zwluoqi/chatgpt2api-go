@@ -831,6 +831,10 @@ func detectImageRejectCode(text string) string {
 			return "content_policy_violation"
 		}
 	}
+	if containsAny(lower, []string{"无法生成", "无法生成或编辑", "不能生成", "不能编辑"}) &&
+		containsAny(lower, []string{"色情", "性内容", "性行为", "性暗示", "裸露", "过度性化"}) {
+		return "content_policy_violation"
+	}
 
 	rejectedPatterns := []string{
 		"不能按原要求生成",
@@ -854,6 +858,15 @@ func detectImageRejectCode(text string) string {
 	}
 
 	return ""
+}
+
+func containsAny(text string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseSSE(resp *fhttp.Response) sseResult {
