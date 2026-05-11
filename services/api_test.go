@@ -831,6 +831,78 @@ func TestImageGenerationPlaceholderPromptReturnsInstruction(t *testing.T) {
 	}
 }
 
+func TestImageGenerationMultipartWithImageUsesEditFlow(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 2, "status": "正常"})
+
+	previousGenerate := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		t.Fatal("generateImageResultFunc should not be called for multipart image generations")
+		return nil, nil
+	}
+	previousEdit := editImageResultFunc
+	editImageResultFunc = func(_ *AccountService, accessToken, prompt string, images []RequestImage, model string) (map[string]any, error) {
+		expectedPrompt := "edit this image\n\nRequested output image size: 1024x1024."
+		if prompt != expectedPrompt {
+			t.Fatalf("prompt = %q, want %q", prompt, expectedPrompt)
+		}
+		if model != "gpt-image-1" {
+			t.Fatalf("model = %q, want gpt-image-1", model)
+		}
+		if len(images) != 1 {
+			t.Fatalf("len(images) = %d, want 1", len(images))
+		}
+		if string(images[0].Data) != "png" {
+			t.Fatalf("image data = %q, want png", string(images[0].Data))
+		}
+		return map[string]any{
+			"created": int64(123),
+			"data": []any{
+				map[string]any{"b64_json": "abc", "revised_prompt": prompt},
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previousGenerate
+		editImageResultFunc = previousEdit
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "edit this image"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("size", "1024x1024"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("image", "image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", &body)
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestImageEditPlaceholderPromptReturnsInstructionWithoutImage(t *testing.T) {
 	srv, authKey := setupTestApp(t)
 	defer srv.Close()

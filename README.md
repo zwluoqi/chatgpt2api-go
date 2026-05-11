@@ -178,6 +178,17 @@ curl http://localhost:8000/v1/images/generations \
   }'
 ```
 
+也兼容部分客户端把图片上传到 `generations` 的用法：当请求为 `multipart/form-data` 且包含 `image` 字段时，后端会按图生图处理。
+
+```bash
+curl http://localhost:8000/v1/images/generations \
+  -H "Authorization: Bearer <auth-key>" \
+  -F "model=gpt-image-2" \
+  -F "prompt=把这张图改成赛博朋克夜景风格" \
+  -F "n=1" \
+  -F "image=@./input.png"
+```
+
 <details>
 <summary>字段说明</summary>
 <br>
@@ -188,6 +199,7 @@ curl http://localhost:8000/v1/images/generations \
 | `prompt`          | 图片生成提示词                                            |
 | `n`               | 生成数量，当前后端限制为 `1-4`                                 |
 | `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                       |
+| `image`           | 可选。仅 multipart/form-data 请求支持；存在时按图生图处理             |
 
 <br>
 </details>

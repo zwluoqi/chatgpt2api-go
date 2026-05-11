@@ -77,6 +77,51 @@ func requireAuthKeyWithQuery(c *gin.Context, authKey string, allowQuery bool) bo
 	return true
 }
 
+func isMultipartFormRequest(c *gin.Context) bool {
+	return strings.Contains(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data")
+}
+
+func parseImageRequestImages(c *gin.Context) ([]RequestImage, string) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		return nil, "invalid multipart form"
+	}
+	files := form.File["image"]
+	if len(files) == 0 {
+		return nil, "image is required"
+	}
+	if len(files) > MaxEditInputImages {
+		return nil, fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)
+	}
+
+	var images []RequestImage
+	for _, file := range files {
+		f, err := file.Open()
+		if err != nil {
+			return nil, "failed to read image"
+		}
+		data, err := io.ReadAll(f)
+		f.Close()
+		if err != nil || len(data) == 0 {
+			return nil, "image file is empty"
+		}
+		fileName := file.Filename
+		if fileName == "" {
+			fileName = "image.png"
+		}
+		mimeType := file.Header.Get("Content-Type")
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		images = append(images, RequestImage{
+			Data:     data,
+			FileName: fileName,
+			MimeType: mimeType,
+		})
+	}
+	return images, ""
+}
+
 func writeImageGenerationError(c *gin.Context, err error) {
 	if err == nil {
 		c.JSON(502, gin.H{"error": "image generation failed"})
@@ -584,6 +629,58 @@ func CreateApp(
 		if !requireAuthKey(c, authKey) {
 			return
 		}
+		if isMultipartFormRequest(c) {
+			prompt := c.PostForm("prompt")
+			if strings.TrimSpace(prompt) == "" {
+				c.JSON(400, gin.H{"error": "prompt is required"})
+				return
+			}
+			size := c.PostForm("size")
+			model := c.PostForm("model")
+			if model == "" {
+				model = "gpt-image-1"
+			}
+			nStr := c.PostForm("n")
+			n := 1
+			if nStr != "" {
+				fmt.Sscanf(nStr, "%d", &n)
+			}
+			if n < 1 || n > 4 {
+				c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
+				return
+			}
+			call := logService.NewCall("/v1/images/generations", model, "图生图", prompt)
+			if IsImagePromptPlaceholder(prompt) {
+				result := BuildImagePromptInstructionResult()
+				call.Success(map[string]any{
+					"end_reason":       "prompt_instruction",
+					"end_reason_label": "提示请求画图内容",
+				})
+				c.JSON(200, result)
+				return
+			}
+			prompt = MergePromptWithSize(prompt, size)
+			images, imageErr := parseImageRequestImages(c)
+			if imageErr != "" {
+				call.Failure(imageErr)
+				c.JSON(400, gin.H{"error": imageErr})
+				return
+			}
+
+			call.AddInputRequestImages(images)
+			result, genErr := chatGPTService.EditWithPool(prompt, images, model, n)
+			if genErr != nil {
+				call.FailureWithExtra(genErr.Error(), imageErrorLogExtra(genErr))
+				writeImageGenerationError(c, genErr)
+				return
+			}
+			call.AddOutputsFromImageData(result)
+			call.Success(map[string]any{
+				"input_mode": "multipart_image",
+			})
+			c.JSON(200, result)
+			return
+		}
 		var body struct {
 			Prompt          string `json:"prompt" binding:"required,min=1"`
 			Model           string `json:"model"`
@@ -659,53 +756,11 @@ func CreateApp(
 		}
 		prompt = MergePromptWithSize(prompt, size)
 
-		form, err := c.MultipartForm()
-		if err != nil {
-			call.Failure("invalid multipart form")
-			c.JSON(400, gin.H{"error": "invalid multipart form"})
+		images, imageErr := parseImageRequestImages(c)
+		if imageErr != "" {
+			call.Failure(imageErr)
+			c.JSON(400, gin.H{"error": imageErr})
 			return
-		}
-		files := form.File["image"]
-		if len(files) == 0 {
-			call.Failure("image is required")
-			c.JSON(400, gin.H{"error": "image is required"})
-			return
-		}
-		if len(files) > MaxEditInputImages {
-			msg := fmt.Sprintf("image count must be between 1 and %d", MaxEditInputImages)
-			call.Failure(msg)
-			c.JSON(400, gin.H{"error": msg})
-			return
-		}
-
-		var images []RequestImage
-		for _, file := range files {
-			f, err := file.Open()
-			if err != nil {
-				call.Failure("failed to read image")
-				c.JSON(400, gin.H{"error": "failed to read image"})
-				return
-			}
-			data, err := io.ReadAll(f)
-			f.Close()
-			if err != nil || len(data) == 0 {
-				call.Failure("image file is empty")
-				c.JSON(400, gin.H{"error": "image file is empty"})
-				return
-			}
-			fileName := file.Filename
-			if fileName == "" {
-				fileName = "image.png"
-			}
-			mimeType := file.Header.Get("Content-Type")
-			if mimeType == "" {
-				mimeType = "image/png"
-			}
-			images = append(images, RequestImage{
-				Data:     data,
-				FileName: fileName,
-				MimeType: mimeType,
-			})
 		}
 
 		call.AddInputRequestImages(images)
