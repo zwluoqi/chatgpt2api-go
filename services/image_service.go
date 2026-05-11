@@ -53,6 +53,21 @@ func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued boo
 	return meta
 }
 
+func buildImageTextResult(prompt, text string) map[string]any {
+	text = strings.TrimSpace(text)
+	return map[string]any{
+		"created": time.Now().Unix(),
+		"message": text,
+		"reason":  "upstream_text_response",
+		"data": []any{
+			map[string]any{
+				"text":           text,
+				"revised_prompt": prompt,
+			},
+		},
+	}
+}
+
 type GeneratedImage struct {
 	B64JSON       string
 	RevisedPrompt string
@@ -737,6 +752,9 @@ func isTerminalImageText(text string) bool {
 	if text == "" {
 		return false
 	}
+	if containsSandboxFileReference(text) {
+		return true
+	}
 	if IsImageQuotaExceededError(text) {
 		return true
 	}
@@ -786,10 +804,14 @@ func mergeImageResultState(base, next sseResult) sseResult {
 }
 
 func shouldContinuePolling(result sseResult) bool {
-	if len(result.FileIDs) > 0 || result.Rejected || IsImageQuotaExceededError(result.Text) {
+	if len(result.FileIDs) > 0 || result.Rejected || IsImageQuotaExceededError(result.Text) || containsSandboxFileReference(result.Text) {
 		return false
 	}
 	return true
+}
+
+func containsSandboxFileReference(text string) bool {
+	return strings.Contains(strings.ToLower(text), "sandbox:/mnt/data/")
 }
 
 func isImageQueuedMessage(text string) bool {
@@ -1254,13 +1276,21 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 				fmt.Printf("[image-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
 				return nil, &ImageGenerationError{Message: responseText, Reason: "quota_exceeded", Meta: meta}
 			}
+			if containsSandboxFileReference(responseText) {
+				fmt.Printf("[image-upstream] sandbox-file token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
+				return nil, &ImageGenerationError{
+					Message: "upstream returned unavailable sandbox file path: " + responseText,
+					Reason:  "sandbox_file_unavailable",
+					Meta:    meta,
+				}
+			}
 			if waitedForResult {
-				if waitedWhileQueued {
+				if state.Queued {
 					fmt.Printf("[image-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
 					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText, Reason: "timed_out_while_queued", Meta: meta}
 				}
-				fmt.Printf("[image-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText, Reason: "timed_out_while_waiting", Meta: meta}
+				fmt.Printf("[image-upstream] text-result token=%s... text=%s\n", tokenPrefix, truncate(responseText, 200))
+				return buildImageTextResult(prompt, responseText), nil
 			}
 			if strings.TrimSpace(state.ConversationID) == "" {
 				fmt.Printf("[image-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)
@@ -1466,13 +1496,21 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 				fmt.Printf("[image-edit-upstream] limited token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
 				return nil, &ImageGenerationError{Message: responseText, Reason: "quota_exceeded", Meta: meta}
 			}
+			if containsSandboxFileReference(responseText) {
+				fmt.Printf("[image-edit-upstream] sandbox-file token=%s... error=%s\n", tokenPrefix, truncate(responseText, 200))
+				return nil, &ImageGenerationError{
+					Message: "upstream returned unavailable sandbox file path: " + responseText,
+					Reason:  "sandbox_file_unavailable",
+					Meta:    meta,
+				}
+			}
 			if waitedForResult {
-				if waitedWhileQueued {
+				if state.Queued {
 					fmt.Printf("[image-edit-upstream] queue-timeout token=%s... error=image generation timed out while queued\n", tokenPrefix)
 					return nil, &ImageGenerationError{Message: "image generation timed out while queued: " + responseText, Reason: "timed_out_while_queued", Meta: meta}
 				}
-				fmt.Printf("[image-edit-upstream] wait-timeout token=%s... error=image generation timed out while waiting\n", tokenPrefix)
-				return nil, &ImageGenerationError{Message: "image generation timed out while waiting: " + responseText, Reason: "timed_out_while_waiting", Meta: meta}
+				fmt.Printf("[image-edit-upstream] text-result token=%s... text=%s\n", tokenPrefix, truncate(responseText, 200))
+				return buildImageTextResult(prompt, responseText), nil
 			}
 			if strings.TrimSpace(state.ConversationID) == "" {
 				fmt.Printf("[image-edit-upstream] fail token=%s... error=missing conversation id\n", tokenPrefix)

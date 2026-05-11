@@ -170,6 +170,8 @@ func imageEndReasonLabel(reason string) string {
 		return "上游未返回图片"
 	case "download_url_missing":
 		return "未拿到图片下载地址"
+	case "sandbox_file_unavailable":
+		return "上游返回了不可访问的 sandbox 文件"
 	case "upstream_text_response":
 		return "上游返回了文本而非图片"
 	default:
@@ -202,6 +204,26 @@ func imageErrorLogExtra(err error) map[string]any {
 	}
 	if len(extra) == 0 {
 		return nil
+	}
+	return extra
+}
+
+func imageResultLogExtra(result map[string]any) map[string]any {
+	if result == nil {
+		return nil
+	}
+	reason := strings.TrimSpace(fmt.Sprintf("%v", result["reason"]))
+	if reason == "" || reason == "<nil>" {
+		return nil
+	}
+	extra := map[string]any{
+		"end_reason": reason,
+	}
+	if label := imageEndReasonLabel(reason); label != "" {
+		extra["end_reason_label"] = label
+	}
+	if message := strings.TrimSpace(fmt.Sprintf("%v", result["message"])); message != "" && message != "<nil>" {
+		extra["upstream_text"] = message
 	}
 	return extra
 }
@@ -675,9 +697,12 @@ func CreateApp(
 				return
 			}
 			call.AddOutputsFromImageData(result)
-			call.Success(map[string]any{
-				"input_mode": "multipart_image",
-			})
+			extra := imageResultLogExtra(result)
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["input_mode"] = "multipart_image"
+			call.Success(extra)
 			c.JSON(200, result)
 			return
 		}
@@ -721,7 +746,7 @@ func CreateApp(
 			return
 		}
 		call.AddOutputsFromImageData(result)
-		call.Success(nil)
+		call.Success(imageResultLogExtra(result))
 		c.JSON(200, result)
 	})
 
@@ -771,7 +796,7 @@ func CreateApp(
 			return
 		}
 		call.AddOutputsFromImageData(result)
-		call.Success(nil)
+		call.Success(imageResultLogExtra(result))
 		c.JSON(200, result)
 	})
 

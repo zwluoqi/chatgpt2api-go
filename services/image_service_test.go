@@ -327,3 +327,38 @@ func TestShouldContinuePollingForPromptEchoText(t *testing.T) {
 		t.Fatal("shouldContinuePolling returned false for prompt echo text")
 	}
 }
+
+func TestShouldStopPollingForSandboxFileReference(t *testing.T) {
+	state := sseResult{
+		ConversationID: "conv_1",
+		Text:           "你可以在这里下载查看：[下载生成图片](sandbox:/mnt/data/output.png)",
+	}
+
+	if shouldContinuePolling(state) {
+		t.Fatal("shouldContinuePolling returned true for sandbox file reference")
+	}
+}
+
+func TestBuildImageTextResult(t *testing.T) {
+	result := buildImageTextResult("draw a cat", "只返回了一段文本")
+	if result["message"] != "只返回了一段文本" {
+		t.Fatalf("message = %v, want text", result["message"])
+	}
+	if result["reason"] != "upstream_text_response" {
+		t.Fatalf("reason = %v, want upstream_text_response", result["reason"])
+	}
+	data, ok := result["data"].([]any)
+	if !ok || len(data) != 1 {
+		t.Fatalf("data = %#v, want one item", result["data"])
+	}
+	item, ok := data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("data[0] = %#v, want map", data[0])
+	}
+	if item["text"] != "只返回了一段文本" {
+		t.Fatalf("text = %v, want upstream text", item["text"])
+	}
+	if item["revised_prompt"] != "draw a cat" {
+		t.Fatalf("revised_prompt = %v, want prompt", item["revised_prompt"])
+	}
+}
