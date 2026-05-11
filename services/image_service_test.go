@@ -329,13 +329,20 @@ func TestShouldContinuePollingForPromptEchoText(t *testing.T) {
 }
 
 func TestShouldStopPollingForSandboxFileReference(t *testing.T) {
-	state := sseResult{
-		ConversationID: "conv_1",
-		Text:           "你可以在这里下载查看：[下载生成图片](sandbox:/mnt/data/output.png)",
+	tests := []string{
+		"你可以在这里下载查看：[下载生成图片](sandbox:/mnt/data/output.png)",
+		"已生成图片：sandbox:/tmp/output.png",
 	}
 
-	if shouldContinuePolling(state) {
-		t.Fatal("shouldContinuePolling returned true for sandbox file reference")
+	for _, text := range tests {
+		state := sseResult{
+			ConversationID: "conv_1",
+			Text:           text,
+		}
+
+		if shouldContinuePolling(state) {
+			t.Fatalf("shouldContinuePolling returned true for sandbox file reference %q", text)
+		}
 	}
 }
 

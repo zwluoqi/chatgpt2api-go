@@ -811,7 +811,7 @@ func shouldContinuePolling(result sseResult) bool {
 }
 
 func containsSandboxFileReference(text string) bool {
-	return strings.Contains(strings.ToLower(text), "sandbox:/mnt/data/")
+	return strings.Contains(strings.ToLower(text), "sandbox:/")
 }
 
 func isImageQueuedMessage(text string) bool {
