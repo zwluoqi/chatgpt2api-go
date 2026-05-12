@@ -109,6 +109,32 @@ func TestGenerateWithPoolReturnsQuotaExceededMessage(t *testing.T) {
 	}
 }
 
+func TestGenerateWithPoolPreservesTextResultMeta(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	as.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常", "image_quota_unknown": false})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		return buildImageTextResult(prompt, "上游只返回文本"), nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	svc := NewChatGPTService(as)
+	result, err := svc.GenerateWithPool("draw a cat", "gpt-image-1", 1)
+	if err != nil {
+		t.Fatalf("GenerateWithPool returned error: %v", err)
+	}
+	if result["message"] != "上游只返回文本" {
+		t.Fatalf("message = %v, want upstream text", result["message"])
+	}
+	if result["reason"] != "upstream_text_response" {
+		t.Fatalf("reason = %v, want upstream_text_response", result["reason"])
+	}
+}
+
 func TestCreateImageCompletionUsesAllInputImages(t *testing.T) {
 	as := tempAccountService(t)
 	as.AddAccounts([]string{"token_a"})

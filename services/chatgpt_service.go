@@ -60,6 +60,8 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 	var created *int64
 	var imageItems []any
 	var lastErr error
+	var resultMessage string
+	var resultReason string
 
 	for index := 1; index <= n; index++ {
 		for {
@@ -103,6 +105,18 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 					}
 				}
 			}
+			if resultMessage == "" {
+				resultMessage = strings.TrimSpace(fmt.Sprintf("%v", result["message"]))
+				if resultMessage == "<nil>" {
+					resultMessage = ""
+				}
+			}
+			if resultReason == "" {
+				resultReason = strings.TrimSpace(fmt.Sprintf("%v", result["reason"]))
+				if resultReason == "<nil>" {
+					resultReason = ""
+				}
+			}
 			quota, status := formatImageAccountState(account)
 			fmt.Printf("[image-generate] success pooled token=%s... quota=%s status=%s\n",
 				tokenPrefix, quota, status)
@@ -123,6 +137,12 @@ func (svc *ChatGPTService) GenerateWithPool(prompt, model string, n int) (map[st
 	if created != nil {
 		result["created"] = *created
 	}
+	if resultMessage != "" {
+		result["message"] = resultMessage
+	}
+	if resultReason != "" {
+		result["reason"] = resultReason
+	}
 	return result, nil
 }
 
@@ -137,6 +157,8 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []RequestImage, mo
 	var created *int64
 	var imageItems []any
 	var lastErr error
+	var resultMessage string
+	var resultReason string
 
 	for index := 1; index <= n; index++ {
 		for {
@@ -180,6 +202,18 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []RequestImage, mo
 					}
 				}
 			}
+			if resultMessage == "" {
+				resultMessage = strings.TrimSpace(fmt.Sprintf("%v", result["message"]))
+				if resultMessage == "<nil>" {
+					resultMessage = ""
+				}
+			}
+			if resultReason == "" {
+				resultReason = strings.TrimSpace(fmt.Sprintf("%v", result["reason"]))
+				if resultReason == "<nil>" {
+					resultReason = ""
+				}
+			}
 			quota, status := formatImageAccountState(account)
 			fmt.Printf("[image-edit] success pooled token=%s... quota=%s status=%s\n",
 				tokenPrefix, quota, status)
@@ -199,6 +233,12 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []RequestImage, mo
 	}
 	if created != nil {
 		result["created"] = *created
+	}
+	if resultMessage != "" {
+		result["message"] = resultMessage
+	}
+	if resultReason != "" {
+		result["reason"] = resultReason
 	}
 	return result, nil
 }

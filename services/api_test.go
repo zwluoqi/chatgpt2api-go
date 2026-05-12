@@ -746,6 +746,60 @@ func TestImageGenerationLogsStructuredEndReason(t *testing.T) {
 	}
 }
 
+func TestImageGenerationLogsUpstreamTextResult(t *testing.T) {
+	srv, authKey, accountService := setupTestAppWithAccountService(t)
+	defer srv.Close()
+
+	accountService.AddAccounts([]string{"token_a"})
+	accountService.UpdateAccount("token_a", map[string]any{"quota": 1, "status": "正常"})
+
+	previous := generateImageResultFunc
+	generateImageResultFunc = func(_ *AccountService, accessToken, prompt, model string) (map[string]any, error) {
+		return buildImageTextResult(prompt, "上游只返回了文本内容"), nil
+	}
+	t.Cleanup(func() {
+		generateImageResultFunc = previous
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "draw a cat",
+		"model":  "gpt-image-1",
+	})
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader(authKey))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	req, _ = http.NewRequest("GET", srv.URL+"/api/logs?limit=10", nil)
+	req.Header.Set("Authorization", authHeader(authKey))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := payload["items"].([]any)
+	if len(items) == 0 {
+		t.Fatal("expected at least one log item")
+	}
+	first, _ := items[0].(map[string]any)
+	detail, _ := first["detail"].(map[string]any)
+	if detail["end_reason"] != "upstream_text_response" {
+		t.Fatalf("end_reason = %v, want upstream_text_response", detail["end_reason"])
+	}
+	if detail["upstream_text"] != "上游只返回了文本内容" {
+		t.Fatalf("upstream_text = %v, want upstream text", detail["upstream_text"])
+	}
+}
+
 func TestImageGenerationAppendsSizeToPrompt(t *testing.T) {
 	srv, authKey, accountService := setupTestAppWithAccountService(t)
 	defer srv.Close()

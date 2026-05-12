@@ -53,6 +53,7 @@ const knownDetailKeys = new Set([
   "error",
   "end_reason",
   "end_reason_label",
+  "upstream_text",
 ]);
 
 function getString(detail: Record<string, unknown>, key: string) {
@@ -132,6 +133,7 @@ function buildSearchText(item: LogEntry) {
     getString(detail, "error"),
     getString(detail, "end_reason"),
     getString(detail, "end_reason_label"),
+    getString(detail, "upstream_text"),
     getString(detail, "account_token_prefix"),
   ]
     .join(" ")
@@ -429,6 +431,7 @@ export default function LogsPage() {
               const errorText = getString(detail, "error");
               const endReason = getString(detail, "end_reason");
               const endReasonLabel = getString(detail, "end_reason_label");
+              const upstreamText = getString(detail, "upstream_text");
               const tokenPrefix = getString(detail, "account_token_prefix");
               const inputImages = getImages(detail, "input_images");
               const outputImages = getImages(detail, "output_images");
@@ -530,6 +533,33 @@ export default function LogsPage() {
                                 {requestText || "—"}
                               </div>
                             </section>
+
+                            {upstreamText ? (
+                              <section className="space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-medium text-stone-700">上游返回文本</div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="rounded-xl"
+                                    onClick={async () => {
+                                      try {
+                                        await navigator.clipboard.writeText(upstreamText);
+                                        toast.success("上游文本已复制");
+                                      } catch {
+                                        toast.error("复制失败");
+                                      }
+                                    }}
+                                  >
+                                    <Copy className="size-4" />
+                                    复制文本
+                                  </Button>
+                                </div>
+                                <div className="max-h-96 overflow-auto rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 whitespace-pre-wrap text-amber-900">
+                                  {upstreamText}
+                                </div>
+                              </section>
+                            ) : null}
 
                             <section className="space-y-2">
                               <div className="text-sm font-medium text-stone-700">基础字段</div>
