@@ -7,8 +7,8 @@ import (
 
 func TestGetPowConfig(t *testing.T) {
 	config := GetPowConfig("TestAgent/1.0")
-	if len(config) != 18 {
-		t.Errorf("config length = %d, want 18", len(config))
+	if len(config) != 25 {
+		t.Errorf("config length = %d, want 25", len(config))
 	}
 	if config[4] != "TestAgent/1.0" {
 		t.Errorf("config[4] = %v, want TestAgent/1.0", config[4])

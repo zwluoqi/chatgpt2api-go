@@ -211,49 +211,124 @@ func bootstrap(s *session) string {
 	return s.fp["oai-device-id"]
 }
 
-func chatRequirements(s *session, accessToken, deviceID string) (string, map[string]any, error) {
-	config := GetPowConfig(userAgentStr)
-	reqToken := GetRequirementsToken(config)
+// chatRequirements 走网页最新版的 sentinel 两步流程：prepare + finalize。
+// 返回最终的 chat-requirements token，以及（按需求解出的）proof token。
+func chatRequirements(s *session, accessToken, deviceID string) (chatToken string, proofToken string, err error) {
+	const base = "/backend-api/sentinel/chat-requirements"
 
-	headers := map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", accessToken),
-		"oai-device-id": deviceID,
-		"content-type":  "application/json",
+	config := GetPowConfig(userAgentStr)
+	pToken := GetRequirementsToken(config)
+
+	// ---- 第一步：prepare ----
+	preparePath := base + "/prepare"
+	prepareHeaders := map[string]string{
+		"Authorization":         fmt.Sprintf("Bearer %s", accessToken),
+		"oai-device-id":         deviceID,
+		"content-type":          "application/json",
+		"x-openai-target-path":  preparePath,
+		"x-openai-target-route": preparePath,
 	}
 
 	resp, err := retry(func() (*fhttp.Response, error) {
-		return s.postJSON(baseURL+"/backend-api/sentinel/chat-requirements", headers, map[string]any{
-			"p": reqToken,
+		return s.postJSON(baseURL+preparePath, prepareHeaders, map[string]any{
+			"p": pToken,
 		}, 30*time.Second)
 	}, 4, 2*time.Second)
 	if err != nil {
-		return "", nil, &ImageGenerationError{Message: fmt.Sprintf("chat-requirements request failed: %v", err)}
+		return "", "", &ImageGenerationError{Message: fmt.Sprintf("chat-requirements prepare request failed: %v", err)}
+	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		msg := truncateUpstream(string(body))
+		if msg == "" {
+			msg = fmt.Sprintf("chat-requirements prepare failed: %d", resp.StatusCode)
+		}
+		return "", "", &ImageGenerationError{Message: msg}
+	}
+
+	var prepareData map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&prepareData); err != nil {
+		resp.Body.Close()
+		return "", "", &ImageGenerationError{Message: "failed to parse chat-requirements prepare response"}
+	}
+	resp.Body.Close()
+
+	// arkose 暂不支持
+	if arkose, _ := prepareData["arkose"].(map[string]any); arkose != nil {
+		if required, _ := arkose["required"].(bool); required {
+			return "", "", &ImageGenerationError{Message: "chat requirements requires arkose token, which is not implemented"}
+		}
+	}
+
+	// proofofwork：按需求解（普号通常 required=true）
+	if pow, _ := prepareData["proofofwork"].(map[string]any); pow != nil {
+		if required, _ := pow["required"].(bool); required {
+			proofToken = GenerateProofToken(
+				fmt.Sprintf("%v", pow["seed"]),
+				fmt.Sprintf("%v", pow["difficulty"]),
+				userAgentStr,
+				GetPowConfig(userAgentStr),
+			)
+		}
+	}
+
+	// turnstile：实测普号即便 turnstile.required=true，finalize 接受空 token 也能正常出图，
+	// 因此这里固定发空 token，不移植完整 JS-VM solver（避免对每次出图都误报告警）。
+	// 若将来上游真正强制校验，finalize 会返回明确错误便于排查。
+	turnstileToken := ""
+
+	prepareTokenVal, _ := prepareData["prepare_token"].(string)
+
+	// ---- 第二步：finalize ----
+	finalizePath := base + "/finalize"
+	finalizeHeaders := map[string]string{
+		"Authorization":         fmt.Sprintf("Bearer %s", accessToken),
+		"oai-device-id":         deviceID,
+		"content-type":          "application/json",
+		"x-openai-target-path":  finalizePath,
+		"x-openai-target-route": finalizePath,
+	}
+
+	resp, err = retry(func() (*fhttp.Response, error) {
+		return s.postJSON(baseURL+finalizePath, finalizeHeaders, map[string]any{
+			"prepare_token":   prepareTokenVal,
+			"proof_token":     proofToken,
+			"turnstile_token": turnstileToken,
+		}, 30*time.Second)
+	}, 4, 2*time.Second)
+	if err != nil {
+		return "", "", &ImageGenerationError{Message: fmt.Sprintf("chat-requirements finalize request failed: %v", err)}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		msg := string(body)
-		if len(msg) > 400 {
-			msg = msg[:400]
-		}
+		msg := truncateUpstream(string(body))
 		if msg == "" {
-			msg = fmt.Sprintf("chat-requirements failed: %d", resp.StatusCode)
+			msg = fmt.Sprintf("chat-requirements finalize failed: %d", resp.StatusCode)
 		}
-		return "", nil, &ImageGenerationError{Message: msg}
+		return "", "", &ImageGenerationError{Message: msg}
 	}
 
-	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", nil, &ImageGenerationError{Message: "failed to parse chat-requirements response"}
+	var data map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", "", &ImageGenerationError{Message: "failed to parse chat-requirements finalize response"}
 	}
 
-	token, _ := payload["token"].(string)
-	powInfo, _ := payload["proofofwork"].(map[string]any)
-	if powInfo == nil {
-		powInfo = map[string]any{}
+	chatToken, _ = data["token"].(string)
+	if chatToken == "" {
+		return "", "", &ImageGenerationError{Message: fmt.Sprintf("missing chat requirements token: %v", data)}
 	}
-	return token, powInfo, nil
+	return chatToken, proofToken, nil
+}
+
+func truncateUpstream(msg string) string {
+	if len(msg) > 400 {
+		return msg[:400]
+	}
+	return msg
 }
 
 func IsTokenInvalidError(message string) bool {
@@ -1217,21 +1292,15 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 		tokenPrefix, model, upstreamModel)
 
 	deviceID := bootstrap(s)
-	chatToken, powInfo, err := chatRequirements(s, accessToken, deviceID)
+	chatToken, proofTokenVal, err := chatRequirements(s, accessToken, deviceID)
 	if err != nil {
 		fmt.Printf("[image-upstream] fail token=%s... error=%v\n", tokenPrefix, err)
 		return nil, err
 	}
 
 	var proofToken *string
-	if required, ok := powInfo["required"].(bool); ok && required {
-		pt := GenerateProofToken(
-			fmt.Sprintf("%v", powInfo["seed"]),
-			fmt.Sprintf("%v", powInfo["difficulty"]),
-			userAgentStr,
-			GetPowConfig(userAgentStr),
-		)
-		proofToken = &pt
+	if proofTokenVal != "" {
+		proofToken = &proofTokenVal
 	}
 
 	parentMessageID := uuid.New().String()
@@ -1432,21 +1501,15 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		})
 	}
 
-	chatToken, powInfo, err := chatRequirements(s, accessToken, deviceID)
+	chatToken, proofTokenVal, err := chatRequirements(s, accessToken, deviceID)
 	if err != nil {
 		fmt.Printf("[image-edit-upstream] fail token=%s... error=%v\n", tokenPrefix, err)
 		return nil, err
 	}
 
 	var proofToken *string
-	if required, ok := powInfo["required"].(bool); ok && required {
-		pt := GenerateProofToken(
-			fmt.Sprintf("%v", powInfo["seed"]),
-			fmt.Sprintf("%v", powInfo["difficulty"]),
-			userAgentStr,
-			GetPowConfig(userAgentStr),
-		)
-		proofToken = &pt
+	if proofTokenVal != "" {
+		proofToken = &proofTokenVal
 	}
 
 	parentMessageID := uuid.New().String()

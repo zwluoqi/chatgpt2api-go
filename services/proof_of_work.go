@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,10 +17,10 @@ import (
 var (
 	powCores = []int{8, 16, 24, 32}
 
-	cachedScripts      []string
-	cachedDpl          string
-	cachedTime         int64
-	powMu sync.Mutex
+	cachedScripts []string
+	cachedDpl     string
+	cachedTime    int64
+	powMu         sync.Mutex
 
 	navigatorKey = []string{
 		"registerProtocolHandler−function registerProtocolHandler() { [native code] }",
@@ -116,8 +117,11 @@ var (
 		"getInstalledRelatedApps−function getInstalledRelatedApps() { [native code] }",
 		"bluetooth−[object Bluetooth]",
 	}
-	documentKey = []string{"_reactListeningo743lnnpvdg", "location"}
-	windowKey   = []string{
+	documentKey = []string{"__reactContainer$fzelfjyxej8", "_reactListening5dehydibo78", "location"}
+
+	// 网页最新版 PoW：屏幕分辨率取一组宽高求和作为 config[0]
+	screenResolutions = [][2]int{{1920, 1080}, {1440, 900}, {2560, 1440}, {3840, 2160}}
+	windowKey         = []string{
 		"0", "window", "self", "document", "name", "location", "customElements",
 		"history", "navigation", "locationbar", "menubar", "personalbar", "scrollbars",
 		"statusbar", "toolbar", "status", "closed", "frames", "length", "top", "opener",
@@ -213,32 +217,37 @@ func GetPowConfig(userAgent string) []any {
 	powMu.Lock()
 	defer powMu.Unlock()
 
-	screenSizes := []int{1920 + 1080, 2560 + 1440, 1920 + 1200, 2560 + 1600}
+	res := screenResolutions[rand.Intn(len(screenResolutions))]
+	screenSize := res[0] + res[1]
 
 	var script string
 	if len(cachedScripts) > 0 {
 		script = cachedScripts[rand.Intn(len(cachedScripts))]
 	}
 
+	perfNow := float64(time.Duration(rand.Intn(100000)) * time.Microsecond / time.Millisecond)
+
 	config := []any{
-		screenSizes[rand.Intn(len(screenSizes))],
+		screenSize,
 		getParseTime(),
 		4294705152,
-		0,
+		1,
 		userAgent,
 		script,
 		cachedDpl,
 		"en-US",
 		"en-US,es-US,en,es",
-		0,
+		rand.Float64(),
 		navigatorKey[rand.Intn(len(navigatorKey))],
 		documentKey[rand.Intn(len(documentKey))],
 		windowKey[rand.Intn(len(windowKey))],
-		float64(time.Duration(rand.Intn(100000)) * time.Microsecond / time.Millisecond),
+		perfNow,
 		uuid.New().String(),
 		"",
 		powCores[rand.Intn(len(powCores))],
-		float64(time.Now().UnixMilli()) - float64(time.Duration(rand.Intn(100000))*time.Microsecond/time.Millisecond),
+		float64(time.Now().UnixMilli()) - perfNow,
+		0, 0, 0, 0, 0, 0,
+		0, // 0 = edge/chrome, 1 = firefox
 	}
 	return config
 }
@@ -332,10 +341,24 @@ func GetAnswerToken(seed, diff string, config []any) (string, bool) {
 	return "gAAAAAB" + answer, solved
 }
 
+// GetRequirementsToken 生成 chat-requirements/prepare 阶段的 "p" 令牌。
+// 网页最新版改为直接 base64(config)，不再在此阶段求解 PoW（PoW 改在 finalize 阶段按需求解）。
 func GetRequirementsToken(config []any) string {
-	seed := fmt.Sprintf("%v", rand.Float64())
-	answer, _ := generateAnswer(seed, "0fffff", config)
-	return "gAAAAAC" + answer
+	return "gAAAAAC" + base64.StdEncoding.EncodeToString(marshalPowConfig(config))
+}
+
+// marshalPowConfig 以紧凑、不转义 HTML 的方式序列化 config，对齐 Python
+// json.dumps(separators=(",",":"), ensure_ascii=False) 的行为。
+func marshalPowConfig(config []any) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(config); err != nil {
+		b, _ := json.Marshal(config)
+		return b
+	}
+	// Encode 会追加一个换行符，去掉它
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 func GenerateProofToken(seed, difficulty, userAgent string, proofConfig []any) string {
@@ -345,4 +368,3 @@ func GenerateProofToken(seed, difficulty, userAgent string, proofConfig []any) s
 	answer, _ := GetAnswerToken(seed, difficulty, proofConfig)
 	return answer
 }
-
