@@ -732,16 +732,29 @@ func messageRole(message map[string]any) string {
 	return strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", author["role"])))
 }
 
+// isUserFacingAssistant 判断是否为发给用户的 assistant 文本回复。
+// 模型对工具（如 dalle）的调用消息 recipient 为工具名（非 "all"），其 content 是
+// {"prompt": ...} 之类的工具入参——不应被当作面向用户的文本结果捕获。
+func isUserFacingAssistant(message map[string]any) bool {
+	if messageRole(message) != "assistant" {
+		return false
+	}
+	recipient := strings.TrimSpace(fmt.Sprintf("%v", message["recipient"]))
+	return recipient == "" || recipient == "all" || recipient == "<nil>"
+}
+
 func isImageToolMessage(message map[string]any) bool {
 	if message == nil || messageRole(message) != "tool" {
 		return false
 	}
-	metadata, _ := message["metadata"].(map[string]any)
-	if metadata == nil || strings.TrimSpace(fmt.Sprintf("%v", metadata["async_task_type"])) != "image_gen" {
+	content, _ := message["content"].(map[string]any)
+	if content == nil {
 		return false
 	}
-	content, _ := message["content"].(map[string]any)
-	return content != nil && strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) == "multimodal_text"
+	// 上游新版的图片结果消息已不再带 metadata.async_task_type=="image_gen"
+	// （实测为 nil），因此不再强依赖该字段；只要是 tool 角色的 multimodal_text
+	// 消息即视为可能的图片结果，具体 asset_pointer 由 appendMessageFileIDs 按前缀提取。
+	return strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) == "multimodal_text"
 }
 
 func messageText(message map[string]any) string {
@@ -1021,7 +1034,7 @@ func parseSSE(resp *fhttp.Response) sseResult {
 			if inner, ok := message["message"].(map[string]any); ok {
 				message = inner
 			}
-			if messageRole(message) != "assistant" {
+			if !isUserFacingAssistant(message) {
 				continue
 			}
 			text := messageText(message)
@@ -1085,7 +1098,7 @@ func extractConversationState(mapping map[string]any) sseResult {
 			continue
 		}
 		message, _ := nodeMap["message"].(map[string]any)
-		if message == nil || messageRole(message) != "assistant" {
+		if message == nil || !isUserFacingAssistant(message) {
 			continue
 		}
 		text := messageText(message)
