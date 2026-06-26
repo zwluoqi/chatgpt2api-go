@@ -150,6 +150,26 @@ func TestSummarizeConversationMapping(t *testing.T) {
 	}
 }
 
+func TestBuildImageErrorMetaTimeoutDiag(t *testing.T) {
+	state := sseResult{
+		ConversationID: "conv-1",
+		DiagMessages:   "  role=tool recipient=all image_gen_async=true",
+		DiagRaw:        `{"mapping":{}}`,
+	}
+	meta := buildImageErrorMeta(state, true, false)
+	if meta["timeout_messages"] != state.DiagMessages {
+		t.Errorf("meta 缺少 timeout_messages: %v", meta["timeout_messages"])
+	}
+	if meta["timeout_raw"] != state.DiagRaw {
+		t.Errorf("meta 缺少 timeout_raw: %v", meta["timeout_raw"])
+	}
+	// 非超时（无 diag）时不应带这两个字段
+	meta2 := buildImageErrorMeta(sseResult{ConversationID: "c"}, false, false)
+	if _, ok := meta2["timeout_messages"]; ok {
+		t.Error("无超时诊断时不应出现 timeout_messages")
+	}
+}
+
 func TestGetImageDimensionsPNG(t *testing.T) {
 	// Minimal 1x1 PNG header
 	pngHeader := []byte{

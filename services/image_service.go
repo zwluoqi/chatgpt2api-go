@@ -51,6 +51,13 @@ func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued boo
 	if state.RejectCode != "" {
 		meta["reject_code"] = state.RejectCode
 	}
+	// 超时诊断数据（仅轮询超时时非空）：随错误落到日志面板，方便 Web 后台排查。
+	if state.DiagMessages != "" {
+		meta["timeout_messages"] = state.DiagMessages
+	}
+	if state.DiagRaw != "" {
+		meta["timeout_raw"] = state.DiagRaw
+	}
 	return meta
 }
 
@@ -708,6 +715,9 @@ type sseResult struct {
 	// PendingImage: 存在 image_gen_async / image_gen_task_id 的占位 tool 消息，
 	// 表示图片正在异步生成，应继续轮询直到拿到 asset。
 	PendingImage bool
+	// 仅在轮询超时时填充，便于落到日志面板排查。
+	DiagMessages string // 最后一次会话 mapping 的逐条消息清单
+	DiagRaw      string // 最后一次会话响应原始 body（截断）
 }
 
 func classifyImageText(text string) (bool, bool, string) {
@@ -919,6 +929,12 @@ func mergeImageResultState(base, next sseResult) sseResult {
 	}
 	if next.TurnComplete {
 		merged.TurnComplete = true
+	}
+	if next.DiagMessages != "" {
+		merged.DiagMessages = next.DiagMessages
+	}
+	if next.DiagRaw != "" {
+		merged.DiagRaw = next.DiagRaw
 	}
 	return merged
 }
@@ -1232,15 +1248,18 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 		time.Sleep(5 * time.Second)
 	}
 	fmt.Printf("[image-poll] timeout token=%s... conversation=%s timeout=%s\n", tokenPrefix, conversationID, maxWait)
-	// 超时时记录全部可用数据，便于排查为何拿不到图。
+	// 超时时记录全部可用数据，便于排查为何拿不到图：既打到 stdout，也随错误的 Meta
+	// 落到日志面板（见 buildImageErrorMeta / imageErrorLogExtra）。
 	fmt.Printf("[image-poll] timeout-state token=%s... conversation=%s fileIDs=%v pendingImage=%v turnComplete=%v queued=%v rejected=%v text=%q\n",
 		tokenPrefix, conversationID, lastResult.FileIDs, lastResult.PendingImage, lastResult.TurnComplete,
 		lastResult.Queued, lastResult.Rejected, truncate(strings.TrimSpace(lastResult.Text), 500))
 	if lastMapping != nil {
+		lastResult.DiagMessages = summarizeConversationMapping(lastMapping)
 		fmt.Printf("[image-poll] timeout-messages token=%s... conversation=%s\n%s\n",
-			tokenPrefix, conversationID, summarizeConversationMapping(lastMapping))
+			tokenPrefix, conversationID, lastResult.DiagMessages)
 	}
 	if len(lastBody) > 0 {
+		lastResult.DiagRaw = truncate(string(lastBody), 32768)
 		fmt.Printf("[image-poll] timeout-raw token=%s... conversation=%s raw=%s\n",
 			tokenPrefix, conversationID, string(lastBody))
 	} else {
