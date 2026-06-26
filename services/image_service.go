@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1172,6 +1173,8 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 	tokenPrefix := accessToken[:min(12, len(accessToken))]
 	started := time.Now()
 	lastResult := sseResult{ConversationID: conversationID}
+	var lastBody []byte
+	var lastMapping map[string]any
 	for time.Since(started) < maxWait {
 		resp, err := retry(func() (*fhttp.Response, error) {
 			return s.get(
@@ -1205,6 +1208,8 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 			time.Sleep(3 * time.Second)
 			continue
 		}
+		lastBody = body
+		lastMapping = mapping
 
 		state := extractConversationState(mapping)
 		state.ConversationID = conversationID
@@ -1227,7 +1232,80 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 		time.Sleep(5 * time.Second)
 	}
 	fmt.Printf("[image-poll] timeout token=%s... conversation=%s timeout=%s\n", tokenPrefix, conversationID, maxWait)
+	// 超时时记录全部可用数据，便于排查为何拿不到图。
+	fmt.Printf("[image-poll] timeout-state token=%s... conversation=%s fileIDs=%v pendingImage=%v turnComplete=%v queued=%v rejected=%v text=%q\n",
+		tokenPrefix, conversationID, lastResult.FileIDs, lastResult.PendingImage, lastResult.TurnComplete,
+		lastResult.Queued, lastResult.Rejected, truncate(strings.TrimSpace(lastResult.Text), 500))
+	if lastMapping != nil {
+		fmt.Printf("[image-poll] timeout-messages token=%s... conversation=%s\n%s\n",
+			tokenPrefix, conversationID, summarizeConversationMapping(lastMapping))
+	}
+	if len(lastBody) > 0 {
+		fmt.Printf("[image-poll] timeout-raw token=%s... conversation=%s raw=%s\n",
+			tokenPrefix, conversationID, string(lastBody))
+	} else {
+		fmt.Printf("[image-poll] timeout-raw token=%s... conversation=%s raw=<none: 每次轮询都未拿到有效会话响应>\n",
+			tokenPrefix, conversationID)
+	}
 	return lastResult
+}
+
+// summarizeConversationMapping 把会话 mapping 里每条消息按时间排序，逐条输出关键字段，
+// 便于在超时时快速判断上游到底返回了什么（是否有图片任务、是否纯文本结束等）。
+func summarizeConversationMapping(mapping map[string]any) string {
+	type row struct {
+		t    float64
+		line string
+	}
+	var rows []row
+	for _, node := range mapping {
+		nodeMap, ok := node.(map[string]any)
+		if !ok {
+			continue
+		}
+		m, _ := nodeMap["message"].(map[string]any)
+		if m == nil {
+			continue
+		}
+		content, _ := m["content"].(map[string]any)
+		ct := ""
+		var ptrs []string
+		if content != nil {
+			ct = strings.TrimSpace(fmt.Sprintf("%v", content["content_type"]))
+			if parts, ok := content["parts"].([]any); ok {
+				for _, p := range parts {
+					if pm, ok := p.(map[string]any); ok {
+						if ap, ok := pm["asset_pointer"].(string); ok && ap != "" {
+							ptrs = append(ptrs, ap)
+						}
+					}
+				}
+			}
+		}
+		meta, _ := m["metadata"].(map[string]any)
+		async := ""
+		taskID := ""
+		if meta != nil {
+			if v, ok := meta["image_gen_async"]; ok {
+				async = fmt.Sprintf("%v", v)
+			}
+			if v, ok := meta["image_gen_task_id"]; ok {
+				taskID = fmt.Sprintf("%v", v)
+			}
+		}
+		rows = append(rows, row{
+			t: messageTimestamp(m),
+			line: fmt.Sprintf("  role=%s recipient=%v end_turn=%v status=%v ct=%s image_gen_async=%s task_id=%s ptrs=%v",
+				messageRole(m), m["recipient"], m["end_turn"], m["status"], ct, async, taskID, ptrs),
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].t < rows[j].t })
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(r.line)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func canonicalizeFileID(fileID string) string {

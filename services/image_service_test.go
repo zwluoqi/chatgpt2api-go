@@ -136,6 +136,20 @@ func TestExtractConversationStateSignals(t *testing.T) {
 	}
 }
 
+func TestSummarizeConversationMapping(t *testing.T) {
+	mapping := map[string]any{
+		"n1": map[string]any{"message": msgDalleToolCall()},
+		"n2": map[string]any{"message": msgPendingImagePlaceholder()},
+		"n3": map[string]any{"message": msgAssistantTextReply()},
+	}
+	out := summarizeConversationMapping(mapping)
+	for _, want := range []string{"role=assistant", "role=tool", "image_gen_async=true", "recipient=all", "end_turn="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary 缺少 %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestGetImageDimensionsPNG(t *testing.T) {
 	// Minimal 1x1 PNG header
 	pngHeader := []byte{
