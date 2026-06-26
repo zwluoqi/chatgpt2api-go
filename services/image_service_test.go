@@ -9,6 +9,133 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 )
 
+// 以下消息结构对照 0622 HAR 真实抓包构造。
+func msgPendingImagePlaceholder() map[string]any {
+	return map[string]any{
+		"author":    map[string]any{"role": "tool"},
+		"recipient": "all",
+		"content":   map[string]any{"content_type": "text", "parts": []any{""}},
+		"end_turn":  true,
+		"metadata": map[string]any{
+			"image_gen_async":   true,
+			"image_gen_task_id": "chatimagegen-us-prod.x:user-y:US",
+		},
+	}
+}
+
+func msgImageResult() map[string]any {
+	return map[string]any{
+		"author":    map[string]any{"role": "tool"},
+		"recipient": "all",
+		"content": map[string]any{
+			"content_type": "multimodal_text",
+			"parts": []any{map[string]any{
+				"content_type":  "image_asset_pointer",
+				"asset_pointer": "sediment://file_00000000349c720b9a5303cdc938d895",
+			}},
+		},
+		"metadata": map[string]any{"image_gen_title": "神圣龙守护神殿"},
+	}
+}
+
+func msgDalleToolCall() map[string]any {
+	return map[string]any{
+		"author":    map[string]any{"role": "assistant"},
+		"recipient": "t2uay3k.sj1i4kz",
+		"content":   map[string]any{"content_type": "code", "parts": []any{`{"prompt":"a dragon"}`}},
+		"end_turn":  false,
+	}
+}
+
+func msgAssistantTextReply() map[string]any {
+	return map[string]any{
+		"author":    map[string]any{"role": "assistant"},
+		"recipient": "all",
+		"content":   map[string]any{"content_type": "text", "parts": []any{"I need an image to use as a reference for edits or generation in this context."}},
+		"end_turn":  true,
+	}
+}
+
+func TestImageMessageClassification(t *testing.T) {
+	if !isImageToolMessage(msgImageResult()) {
+		t.Error("图片结果消息应被识别为 image tool message")
+	}
+	if isImageToolMessage(msgPendingImagePlaceholder()) {
+		t.Error("占位消息(ct=text)不应被当作图片结果")
+	}
+	if !isPendingImageTask(msgPendingImagePlaceholder()) {
+		t.Error("占位消息应被识别为 pending image task")
+	}
+	if isPendingImageTask(msgImageResult()) {
+		t.Error("图片结果消息不应被识别为 pending image task")
+	}
+	if !isAssistantTurnComplete(msgAssistantTextReply()) {
+		t.Error("recipient=all 且 end_turn 的文本回复应判定为 turn complete")
+	}
+	if isAssistantTurnComplete(msgDalleToolCall()) {
+		t.Error("dalle 工具调用(recipient!=all, end_turn=false)不应判定为 turn complete")
+	}
+	if isUserFacingAssistant(msgDalleToolCall()) {
+		t.Error("dalle 工具调用不应被当作面向用户的文本")
+	}
+}
+
+func TestShouldContinuePollingEarlyStop(t *testing.T) {
+	// 纯文字答复结束、无挂起图片任务 → 立即停止
+	if shouldContinuePolling(sseResult{Text: "need an image", TurnComplete: true, PendingImage: false}) {
+		t.Error("turn 已结束且无挂起图片任务，应停止轮询")
+	}
+	// 图片正在生成（占位存在），即便 end_turn → 继续等
+	if !shouldContinuePolling(sseResult{TurnComplete: true, PendingImage: true}) {
+		t.Error("有挂起图片任务时应继续轮询")
+	}
+	// 仅有挂起图片任务 → 继续等
+	if !shouldContinuePolling(sseResult{PendingImage: true}) {
+		t.Error("挂起图片任务应继续轮询")
+	}
+	// 拿到图片 → 停止
+	if shouldContinuePolling(sseResult{FileIDs: []string{"sed:x"}, PendingImage: true}) {
+		t.Error("已拿到图片应停止轮询")
+	}
+}
+
+func TestExtractConversationStateSignals(t *testing.T) {
+	// 模拟一次成功出图的会话：工具调用 + 占位 + 结果图
+	mapping := map[string]any{
+		"n1": map[string]any{"message": msgDalleToolCall()},
+		"n2": map[string]any{"message": msgPendingImagePlaceholder()},
+		"n3": map[string]any{"message": msgImageResult()},
+	}
+	st := extractConversationState(mapping)
+	if len(st.FileIDs) != 1 {
+		t.Fatalf("应提取到 1 个图片 fileID, got %v", st.FileIDs)
+	}
+	if !st.PendingImage {
+		t.Error("应检测到 pending image task")
+	}
+	if shouldContinuePolling(st) {
+		t.Error("已拿到图片应停止轮询")
+	}
+
+	// 模拟纯文字拒绝（无图）
+	mapping2 := map[string]any{
+		"n1": map[string]any{"message": msgAssistantTextReply()},
+	}
+	st2 := extractConversationState(mapping2)
+	if len(st2.FileIDs) != 0 {
+		t.Error("文字拒绝不应有 fileID")
+	}
+	if !st2.TurnComplete || st2.PendingImage {
+		t.Errorf("文字拒绝应 TurnComplete=true PendingImage=false, got %+v", st2)
+	}
+	if shouldContinuePolling(st2) {
+		t.Error("文字拒绝应立即停止轮询(早停)")
+	}
+	if strings.TrimSpace(st2.Text) == "" {
+		t.Error("应捕获到拒绝文本")
+	}
+}
+
 func TestGetImageDimensionsPNG(t *testing.T) {
 	// Minimal 1x1 PNG header
 	pngHeader := []byte{
@@ -147,24 +274,6 @@ func TestTruncate(t *testing.T) {
 	}
 	if truncate("hi", 10) != "hi" {
 		t.Errorf("truncate should not change shorter strings")
-	}
-}
-
-func TestWrapImageGenerationPrompt(t *testing.T) {
-	prompt := "生成一个红色展示柜"
-	wrapped := wrapImageGenerationPrompt(prompt)
-
-	if !strings.Contains(wrapped, prompt) {
-		t.Fatalf("wrapped prompt should contain original prompt, got %q", wrapped)
-	}
-	for _, want := range []string{
-		"Do not answer with text descriptions",
-		"Do not ask the user for more details",
-		"Return the generated image result",
-	} {
-		if !strings.Contains(wrapped, want) {
-			t.Fatalf("wrapped prompt missing %q: %q", want, wrapped)
-		}
 	}
 }
 

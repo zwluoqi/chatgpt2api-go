@@ -504,24 +504,6 @@ func truncate(s string, maxLen int) string {
 	return s
 }
 
-func wrapImageGenerationPrompt(prompt string) string {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return prompt
-	}
-	return strings.TrimSpace(fmt.Sprintf(`[SYSTEM INSTRUCTION - MUST FOLLOW]
-You are an image generation engine. Your only task is to create the requested image.
-Do not answer with text descriptions, questions, suggestions, options, analysis, or follow-up prompts.
-Do not ask the user for more details. If details are missing, make reasonable visual choices and generate the image.
-If the request references an existing image, use the provided image as context and produce the edited/generated image.
-
-[IMAGE GENERATION REQUEST]
-%s
-
-[OUTPUT REQUIREMENT]
-Return the generated image result.`, prompt))
-}
-
 func sendConversation(s *session, accessToken, deviceID, chatToken string, proofToken *string, parentMessageID, prompt, model string) (*fhttp.Response, error) {
 	headers := map[string]string{
 		"Authorization":           fmt.Sprintf("Bearer %s", accessToken),
@@ -548,7 +530,7 @@ func sendConversation(s *session, accessToken, deviceID, chatToken string, proof
 				"author": map[string]any{"role": "user"},
 				"content": map[string]any{
 					"content_type": "text",
-					"parts":        []any{wrapImageGenerationPrompt(prompt)},
+					"parts":        []any{strings.TrimSpace(prompt)},
 				},
 				"metadata": map[string]any{
 					"attachments": []any{},
@@ -646,7 +628,7 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 		})
 	}
 
-	parts := append(imageParts, wrapImageGenerationPrompt(prompt))
+	parts := append(imageParts, strings.TrimSpace(prompt))
 
 	body := map[string]any{
 		"action": "next",
@@ -719,6 +701,12 @@ type sseResult struct {
 	Queued         bool
 	Rejected       bool
 	RejectCode     string
+	// TurnComplete: 出现了面向用户的 assistant 文本消息且 end_turn=true
+	//（模型给出了最终文字答复，例如拒绝/要参考图），可据此提前结束等待。
+	TurnComplete bool
+	// PendingImage: 存在 image_gen_async / image_gen_task_id 的占位 tool 消息，
+	// 表示图片正在异步生成，应继续轮询直到拿到 asset。
+	PendingImage bool
 }
 
 func classifyImageText(text string) (bool, bool, string) {
@@ -755,6 +743,43 @@ func isImageToolMessage(message map[string]any) bool {
 	// （实测为 nil），因此不再强依赖该字段；只要是 tool 角色的 multimodal_text
 	// 消息即视为可能的图片结果，具体 asset_pointer 由 appendMessageFileIDs 按前缀提取。
 	return strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) == "multimodal_text"
+}
+
+// isPendingImageTask 判断消息是否为"图片正在异步生成"的占位 tool 消息。
+// 上游标记：metadata.image_gen_async==true 或带 image_gen_task_id。
+func isPendingImageTask(message map[string]any) bool {
+	if message == nil || messageRole(message) != "tool" {
+		return false
+	}
+	meta, _ := message["metadata"].(map[string]any)
+	if meta == nil {
+		return false
+	}
+	if v, ok := meta["image_gen_async"].(bool); ok && v {
+		return true
+	}
+	if tid, ok := meta["image_gen_task_id"]; ok && strings.TrimSpace(fmt.Sprintf("%v", tid)) != "" {
+		return true
+	}
+	return false
+}
+
+// isAssistantTurnComplete 判断是否为"面向用户、已结束本轮"的 assistant 文本消息。
+// 这类消息 recipient=all、content_type 为 text/multimodal_text、end_turn=true，
+// 代表模型给出了最终文字答复（而非图片）。
+func isAssistantTurnComplete(message map[string]any) bool {
+	if !isUserFacingAssistant(message) {
+		return false
+	}
+	if done, ok := message["end_turn"].(bool); !ok || !done {
+		return false
+	}
+	content, _ := message["content"].(map[string]any)
+	if content == nil {
+		return false
+	}
+	ct := strings.TrimSpace(fmt.Sprintf("%v", content["content_type"]))
+	return ct == "text" || ct == "multimodal_text"
 }
 
 func messageText(message map[string]any) string {
@@ -888,11 +913,22 @@ func mergeImageResultState(base, next sseResult) sseResult {
 	if strings.TrimSpace(next.Text) != "" {
 		applyImageTextState(&merged, next.Text)
 	}
+	if next.PendingImage {
+		merged.PendingImage = true
+	}
+	if next.TurnComplete {
+		merged.TurnComplete = true
+	}
 	return merged
 }
 
 func shouldContinuePolling(result sseResult) bool {
 	if len(result.FileIDs) > 0 || result.Rejected || IsImageQuotaExceededError(result.Text) || containsSandboxFileReference(result.Text) {
+		return false
+	}
+	// 模型本轮已结束且没有挂起的图片生成任务 = 不会再有图片（纯文字答复，如拒绝/
+	// 要求参考图），无需再轮询到超时，立即结束。
+	if result.TurnComplete && !result.PendingImage {
 		return false
 	}
 	return true
@@ -1056,6 +1092,12 @@ func parseSSE(resp *fhttp.Response) sseResult {
 			if isImageToolMessage(message) {
 				appendMessageFileIDs(message, fileIDSet, &fileIDs)
 			}
+			if isPendingImageTask(message) {
+				result.PendingImage = true
+			}
+			if isAssistantTurnComplete(message) {
+				result.TurnComplete = true
+			}
 		}
 	}
 
@@ -1098,7 +1140,16 @@ func extractConversationState(mapping map[string]any) sseResult {
 			continue
 		}
 		message, _ := nodeMap["message"].(map[string]any)
-		if message == nil || !isUserFacingAssistant(message) {
+		if message == nil {
+			continue
+		}
+		if isPendingImageTask(message) {
+			result.PendingImage = true
+		}
+		if isAssistantTurnComplete(message) {
+			result.TurnComplete = true
+		}
+		if !isUserFacingAssistant(message) {
 			continue
 		}
 		text := messageText(message)
