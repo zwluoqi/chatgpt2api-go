@@ -1023,6 +1023,25 @@ func detectImageRejectCode(text string) string {
 	return ""
 }
 
+// contentPolicyKeyword 是内容政策拦截时追加到返回文本里的关键词，方便上游判定。
+const contentPolicyKeyword = "安全政策"
+
+// appendContentPolicyKeyword 仅在结束原因为内容政策拦截(content_policy_violation)时，
+// 给返回文本追加 contentPolicyKeyword 关键词；其它原因原样返回。
+func appendContentPolicyKeyword(text, rejectCode string) string {
+	if rejectCode != "content_policy_violation" {
+		return text
+	}
+	if strings.Contains(text, contentPolicyKeyword) {
+		return text
+	}
+	trimmed := strings.TrimRight(text, " \t\n")
+	if trimmed == "" {
+		return contentPolicyKeyword
+	}
+	return trimmed + " " + contentPolicyKeyword
+}
+
 func containsAny(text string, patterns []string) bool {
 	for _, pattern := range patterns {
 		if strings.Contains(text, pattern) {
@@ -1494,7 +1513,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
 					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
-					Message:    responseText,
+					Message:    appendContentPolicyKeyword(responseText, state.RejectCode),
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,
@@ -1708,7 +1727,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
 					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
-					Message:    responseText,
+					Message:    appendContentPolicyKeyword(responseText, state.RejectCode),
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,

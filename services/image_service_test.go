@@ -170,6 +170,27 @@ func TestBuildImageErrorMetaTimeoutDiag(t *testing.T) {
 	}
 }
 
+func TestAppendContentPolicyKeyword(t *testing.T) {
+	// 内容政策拦截 → 追加关键词
+	got := appendContentPolicyKeyword("抱歉，该提示违反了我们的内容政策。", "content_policy_violation")
+	if !strings.Contains(got, contentPolicyKeyword) {
+		t.Errorf("内容政策拦截应追加 %q, got %q", contentPolicyKeyword, got)
+	}
+	// 其它原因 → 原样
+	if got := appendContentPolicyKeyword("I can't generate that", "image_generation_rejected"); strings.Contains(got, contentPolicyKeyword) {
+		t.Errorf("非内容政策拦截不应追加关键词, got %q", got)
+	}
+	// 幂等：已含关键词不重复追加
+	once := appendContentPolicyKeyword("内容政策 安全政策", "content_policy_violation")
+	if strings.Count(once, contentPolicyKeyword) != 1 {
+		t.Errorf("不应重复追加关键词, got %q", once)
+	}
+	// 空文本 → 直接是关键词
+	if got := appendContentPolicyKeyword("", "content_policy_violation"); got != contentPolicyKeyword {
+		t.Errorf("空文本应返回关键词本身, got %q", got)
+	}
+}
+
 func TestGetImageDimensionsPNG(t *testing.T) {
 	// Minimal 1x1 PNG header
 	pngHeader := []byte{
