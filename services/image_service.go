@@ -62,7 +62,8 @@ func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued boo
 }
 
 func buildImageTextResult(prompt, text string) map[string]any {
-	text = strings.TrimSpace(text)
+	// 上游返回文本而非图片：追加"安全政策"关键词，方便上游判定。
+	text = appendSafetyKeyword(strings.TrimSpace(text), "upstream_text_response")
 	return map[string]any{
 		"created": time.Now().Unix(),
 		"message": text,
@@ -1023,13 +1024,21 @@ func detectImageRejectCode(text string) string {
 	return ""
 }
 
-// contentPolicyKeyword 是内容政策拦截时追加到返回文本里的关键词，方便上游判定。
+// contentPolicyKeyword 是触发安全/政策类结束原因时追加到返回文本里的关键词，方便上游判定。
 const contentPolicyKeyword = "安全政策"
 
-// appendContentPolicyKeyword 仅在结束原因为内容政策拦截(content_policy_violation)时，
-// 给返回文本追加 contentPolicyKeyword 关键词；其它原因原样返回。
-func appendContentPolicyKeyword(text, rejectCode string) string {
-	if rejectCode != "content_policy_violation" {
+// safetyKeywordReasons 列出需要追加关键词的结束原因：
+//   - content_policy_violation 内容政策拦截
+//   - upstream_text_response   上游返回了文本而非图片
+var safetyKeywordReasons = map[string]bool{
+	"content_policy_violation": true,
+	"upstream_text_response":   true,
+}
+
+// appendSafetyKeyword 在结束原因属于 safetyKeywordReasons 时给返回文本追加
+// contentPolicyKeyword 关键词；其它原因原样返回；已含关键词不重复追加。
+func appendSafetyKeyword(text, reason string) string {
+	if !safetyKeywordReasons[reason] {
 		return text
 	}
 	if strings.Contains(text, contentPolicyKeyword) {
@@ -1513,7 +1522,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
 					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
-					Message:    appendContentPolicyKeyword(responseText, state.RejectCode),
+					Message:    appendSafetyKeyword(responseText, state.RejectCode),
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,
@@ -1546,7 +1555,7 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 				return nil, &ImageGenerationError{Message: responseText, Reason: "missing_conversation_id", Meta: meta}
 			}
 			fmt.Printf("[image-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
-			return nil, &ImageGenerationError{Message: responseText, Reason: "upstream_text_response", Meta: meta}
+			return nil, &ImageGenerationError{Message: appendSafetyKeyword(responseText, "upstream_text_response"), Reason: "upstream_text_response", Meta: meta}
 		}
 		if waitedForResult {
 			if waitedWhileQueued {
@@ -1727,7 +1736,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
 					tokenPrefix, state.RejectCode, truncate(responseText, 200))
 				return nil, &ImageGenerationError{
-					Message:    appendContentPolicyKeyword(responseText, state.RejectCode),
+					Message:    appendSafetyKeyword(responseText, state.RejectCode),
 					StatusCode: 400,
 					ErrorType:  "invalid_request_error",
 					Code:       state.RejectCode,
@@ -1760,7 +1769,7 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 				return nil, &ImageGenerationError{Message: responseText, Reason: "missing_conversation_id", Meta: meta}
 			}
 			fmt.Printf("[image-edit-upstream] fail token=%s... error=%s\n", tokenPrefix, responseText)
-			return nil, &ImageGenerationError{Message: responseText, Reason: "upstream_text_response", Meta: meta}
+			return nil, &ImageGenerationError{Message: appendSafetyKeyword(responseText, "upstream_text_response"), Reason: "upstream_text_response", Meta: meta}
 		}
 		if waitedForResult {
 			if waitedWhileQueued {

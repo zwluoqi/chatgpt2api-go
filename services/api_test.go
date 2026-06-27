@@ -795,8 +795,8 @@ func TestImageGenerationLogsUpstreamTextResult(t *testing.T) {
 	if detail["end_reason"] != "upstream_text_response" {
 		t.Fatalf("end_reason = %v, want upstream_text_response", detail["end_reason"])
 	}
-	if detail["upstream_text"] != "上游只返回了文本内容" {
-		t.Fatalf("upstream_text = %v, want upstream text", detail["upstream_text"])
+	if detail["upstream_text"] != "上游只返回了文本内容 "+contentPolicyKeyword {
+		t.Fatalf("upstream_text = %v, want upstream text with keyword", detail["upstream_text"])
 	}
 }
 

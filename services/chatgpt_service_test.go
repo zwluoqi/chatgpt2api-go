@@ -127,8 +127,8 @@ func TestGenerateWithPoolPreservesTextResultMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateWithPool returned error: %v", err)
 	}
-	if result["message"] != "上游只返回文本" {
-		t.Fatalf("message = %v, want upstream text", result["message"])
+	if result["message"] != "上游只返回文本 "+contentPolicyKeyword {
+		t.Fatalf("message = %v, want upstream text with keyword", result["message"])
 	}
 	if result["reason"] != "upstream_text_response" {
 		t.Fatalf("reason = %v, want upstream_text_response", result["reason"])

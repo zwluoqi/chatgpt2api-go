@@ -170,25 +170,49 @@ func TestBuildImageErrorMetaTimeoutDiag(t *testing.T) {
 	}
 }
 
-func TestAppendContentPolicyKeyword(t *testing.T) {
+func TestAppendSafetyKeyword(t *testing.T) {
 	// 内容政策拦截 → 追加关键词
-	got := appendContentPolicyKeyword("抱歉，该提示违反了我们的内容政策。", "content_policy_violation")
-	if !strings.Contains(got, contentPolicyKeyword) {
+	if got := appendSafetyKeyword("抱歉，该提示违反了我们的内容政策。", "content_policy_violation"); !strings.Contains(got, contentPolicyKeyword) {
 		t.Errorf("内容政策拦截应追加 %q, got %q", contentPolicyKeyword, got)
 	}
+	// 上游返回文本而非图片 → 追加关键词
+	if got := appendSafetyKeyword("Here is a description instead.", "upstream_text_response"); !strings.Contains(got, contentPolicyKeyword) {
+		t.Errorf("upstream_text_response 应追加 %q, got %q", contentPolicyKeyword, got)
+	}
 	// 其它原因 → 原样
-	if got := appendContentPolicyKeyword("I can't generate that", "image_generation_rejected"); strings.Contains(got, contentPolicyKeyword) {
-		t.Errorf("非内容政策拦截不应追加关键词, got %q", got)
+	if got := appendSafetyKeyword("I can't generate that", "image_generation_rejected"); strings.Contains(got, contentPolicyKeyword) {
+		t.Errorf("非安全类原因不应追加关键词, got %q", got)
 	}
 	// 幂等：已含关键词不重复追加
-	once := appendContentPolicyKeyword("内容政策 安全政策", "content_policy_violation")
-	if strings.Count(once, contentPolicyKeyword) != 1 {
+	if once := appendSafetyKeyword("内容政策 安全政策", "content_policy_violation"); strings.Count(once, contentPolicyKeyword) != 1 {
 		t.Errorf("不应重复追加关键词, got %q", once)
 	}
 	// 空文本 → 直接是关键词
-	if got := appendContentPolicyKeyword("", "content_policy_violation"); got != contentPolicyKeyword {
+	if got := appendSafetyKeyword("", "upstream_text_response"); got != contentPolicyKeyword {
 		t.Errorf("空文本应返回关键词本身, got %q", got)
 	}
+}
+
+func TestBuildImageTextResultHasKeyword(t *testing.T) {
+	res := buildImageTextResult("a cat", "这是一段文字说明，并非图片。")
+	if !strings.Contains(toStr(res["message"]), contentPolicyKeyword) {
+		t.Errorf("buildImageTextResult message 应含关键词, got %v", res["message"])
+	}
+	data, _ := res["data"].([]any)
+	if len(data) > 0 {
+		if m, ok := data[0].(map[string]any); ok {
+			if !strings.Contains(toStr(m["text"]), contentPolicyKeyword) {
+				t.Errorf("data[0].text 应含关键词, got %v", m["text"])
+			}
+		}
+	}
+}
+
+func toStr(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func TestGetImageDimensionsPNG(t *testing.T) {
@@ -512,8 +536,10 @@ func TestShouldStopPollingForSandboxFileReference(t *testing.T) {
 
 func TestBuildImageTextResult(t *testing.T) {
 	result := buildImageTextResult("draw a cat", "只返回了一段文本")
-	if result["message"] != "只返回了一段文本" {
-		t.Fatalf("message = %v, want text", result["message"])
+	// upstream_text_response 现在会追加"安全政策"关键词
+	wantText := "只返回了一段文本 " + contentPolicyKeyword
+	if result["message"] != wantText {
+		t.Fatalf("message = %v, want %q", result["message"], wantText)
 	}
 	if result["reason"] != "upstream_text_response" {
 		t.Fatalf("reason = %v, want upstream_text_response", result["reason"])
@@ -526,8 +552,8 @@ func TestBuildImageTextResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("data[0] = %#v, want map", data[0])
 	}
-	if item["text"] != "只返回了一段文本" {
-		t.Fatalf("text = %v, want upstream text", item["text"])
+	if item["text"] != wantText {
+		t.Fatalf("text = %v, want %q", item["text"], wantText)
 	}
 	if item["revised_prompt"] != "draw a cat" {
 		t.Fatalf("revised_prompt = %v, want prompt", item["revised_prompt"])
