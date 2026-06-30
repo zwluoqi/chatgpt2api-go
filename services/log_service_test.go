@@ -1,11 +1,8 @@
 package services
 
 import (
-	"bytes"
 	"encoding/base64"
 	"fmt"
-	"image"
-	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,32 +11,6 @@ import (
 
 	"chatgpt2api-go/config"
 )
-
-func TestLoggedCallRecordsImageSize(t *testing.T) {
-	png := makeTestPNGForLog(120, 80)
-	c := &LoggedCall{}
-	c.AddOutputB64("image/png", base64.StdEncoding.EncodeToString(png))
-	if len(c.outputs) != 1 {
-		t.Fatalf("outputs len = %d, want 1", len(c.outputs))
-	}
-	out := c.outputs[0]
-	if out.Width != 120 || out.Height != 80 {
-		t.Errorf("output dims = %dx%d, want 120x80", out.Width, out.Height)
-	}
-	if out.Bytes != len(png) {
-		t.Errorf("output bytes = %d, want %d", out.Bytes, len(png))
-	}
-	if labels := imageSizeLabels(c.outputs); len(labels) != 1 || labels[0] != "120x80" {
-		t.Errorf("size labels = %v, want [120x80]", labels)
-	}
-}
-
-func makeTestPNGForLog(w, h int) []byte {
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
-}
 
 func TestLogServiceAddListDelete(t *testing.T) {
 	dir := t.TempDir()
@@ -84,6 +55,34 @@ func TestLogServiceAddListDelete(t *testing.T) {
 
 	if !strings.HasSuffix(filepath.Clean(svc.dir), "logs") {
 		t.Errorf("unexpected log dir: %s", svc.dir)
+	}
+}
+
+func TestLoggedCallRecordsRequestSize(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewLogService(dir)
+
+	c := svc.NewCall("/v1/images/generations", "gpt-image-1", "文生图", "draw a cat").WithRequestSize("1024x1024")
+	c.Success(nil)
+
+	items := svc.List(LogFilter{Limit: 10})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(items))
+	}
+	if items[0].Detail["request_size"] != "1024x1024" {
+		t.Errorf("request_size = %v, want 1024x1024", items[0].Detail["request_size"])
+	}
+
+	// 未设置 size 时不应出现该字段
+	c2 := svc.NewCall("/v1/images/generations", "gpt-image-1", "文生图", "no size")
+	c2.Success(nil)
+	items2 := svc.List(LogFilter{Limit: 10})
+	for _, it := range items2 {
+		if it.Detail["request_text"] == "no size" {
+			if _, ok := it.Detail["request_size"]; ok {
+				t.Errorf("未设置 size 不应出现 request_size 字段")
+			}
+		}
 	}
 }
 

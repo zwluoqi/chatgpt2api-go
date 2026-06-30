@@ -671,7 +671,7 @@ func CreateApp(
 				c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 				return
 			}
-			call := logService.NewCall("/v1/images/generations", model, "图生图", prompt)
+			call := logService.NewCall("/v1/images/generations", model, "图生图", prompt).WithRequestSize(size)
 			if IsImagePromptPlaceholder(prompt) {
 				result := BuildImagePromptInstructionResult()
 				call.Success(map[string]any{
@@ -728,7 +728,7 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
-		call := logService.NewCall("/v1/images/generations", body.Model, "文生图", body.Prompt)
+		call := logService.NewCall("/v1/images/generations", body.Model, "文生图", body.Prompt).WithRequestSize(body.Size)
 		if IsImagePromptPlaceholder(body.Prompt) {
 			result := BuildImagePromptInstructionResult()
 			call.Success(map[string]any{
@@ -769,7 +769,7 @@ func CreateApp(
 			c.JSON(400, gin.H{"error": "n must be between 1 and 4"})
 			return
 		}
-		call := logService.NewCall("/v1/images/edits", model, "图生图", prompt)
+		call := logService.NewCall("/v1/images/edits", model, "图生图", prompt).WithRequestSize(size)
 		if IsImagePromptPlaceholder(prompt) {
 			result := BuildImagePromptInstructionResult()
 			call.Success(map[string]any{

@@ -226,41 +226,10 @@ func (s *LogService) ReadImageAsset(id, fileName string) ([]byte, string, bool) 
 }
 
 type LogImage struct {
-	Mime   string `json:"mime"`
-	Name   string `json:"name,omitempty"`
-	B64    string `json:"b64,omitempty"`
-	File   string `json:"file,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
-	Bytes  int    `json:"bytes,omitempty"`
-}
-
-// imageSizeLabels 汇总一组图片的尺寸标签（如 "1024x1024"），用于在日志详情里
-// 以一个易读的顶层字段直接展示尺寸；无尺寸的退化为字节数（如 "12345B"）。
-func imageSizeLabels(images []LogImage) []string {
-	labels := make([]string, 0, len(images))
-	for _, img := range images {
-		switch {
-		case img.Width > 0 && img.Height > 0:
-			labels = append(labels, fmt.Sprintf("%dx%d", img.Width, img.Height))
-		case img.Bytes > 0:
-			labels = append(labels, fmt.Sprintf("%dB", img.Bytes))
-		}
-	}
-	return labels
-}
-
-// fillImageSize 用图片字节填充尺寸与体积（width/height/bytes），便于在日志里记录
-// "上游传送的 size"。解析失败则只记录字节数。
-func fillImageSize(img *LogImage, data []byte) {
-	if img == nil || len(data) == 0 {
-		return
-	}
-	img.Bytes = len(data)
-	if w, h := getImageDimensions(data); w > 0 && h > 0 {
-		img.Width = w
-		img.Height = h
-	}
+	Mime string `json:"mime"`
+	Name string `json:"name,omitempty"`
+	B64  string `json:"b64,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 type LoggedCall struct {
@@ -270,6 +239,7 @@ type LoggedCall struct {
 	summary     string
 	started     time.Time
 	requestText string
+	requestSize string
 	tokenPrefix string
 	inputs      []LogImage
 	outputs     []LogImage
@@ -285,6 +255,15 @@ func (s *LogService) NewCall(endpoint, model, summary, requestText string) *Logg
 		started:     time.Now(),
 		requestText: requestText,
 	}
+}
+
+// WithRequestSize 记录用户请求体里的 size 参数（如 "1024x1024"），随日志详情展示。
+func (c *LoggedCall) WithRequestSize(size string) *LoggedCall {
+	if c == nil {
+		return nil
+	}
+	c.requestSize = strings.TrimSpace(size)
+	return c
 }
 
 func (c *LoggedCall) WithTokenPrefix(token string) *LoggedCall {
@@ -306,13 +285,11 @@ func (c *LoggedCall) AddInputImage(name, mime string, data []byte) {
 	if mime == "" {
 		mime = "image/png"
 	}
-	img := LogImage{
+	c.inputs = append(c.inputs, LogImage{
 		Mime: mime,
 		Name: name,
 		B64:  base64.StdEncoding.EncodeToString(data),
-	}
-	fillImageSize(&img, data)
-	c.inputs = append(c.inputs, img)
+	})
 }
 
 func (c *LoggedCall) AddInputDataURL(url string) {
@@ -323,11 +300,7 @@ func (c *LoggedCall) AddInputDataURL(url string) {
 	if b64 == "" {
 		return
 	}
-	img := LogImage{Mime: mime, B64: b64}
-	if data, err := base64.StdEncoding.DecodeString(b64); err == nil {
-		fillImageSize(&img, data)
-	}
-	c.inputs = append(c.inputs, img)
+	c.inputs = append(c.inputs, LogImage{Mime: mime, B64: b64})
 }
 
 func (c *LoggedCall) AddOutputB64(mime, b64 string) {
@@ -341,11 +314,7 @@ func (c *LoggedCall) AddOutputB64(mime, b64 string) {
 	if mime == "" {
 		mime = "image/png"
 	}
-	img := LogImage{Mime: mime, B64: b64}
-	if data, err := base64.StdEncoding.DecodeString(b64); err == nil {
-		fillImageSize(&img, data)
-	}
-	c.outputs = append(c.outputs, img)
+	c.outputs = append(c.outputs, LogImage{Mime: mime, B64: b64})
 }
 
 func (c *LoggedCall) AddInputRequestImages(images []RequestImage) {
@@ -482,20 +451,17 @@ func (c *LoggedCall) write(status, suffix, errMsg string, extra map[string]any) 
 	if excerpt := requestExcerpt(c.requestText, 0); excerpt != "" {
 		detail["request_text"] = excerpt
 	}
+	if c.requestSize != "" {
+		detail["request_size"] = c.requestSize
+	}
 	if c.tokenPrefix != "" {
 		detail["account_token_prefix"] = c.tokenPrefix
 	}
 	if len(c.inputs) > 0 {
 		detail["input_images"] = c.inputs
-		if sizes := imageSizeLabels(c.inputs); len(sizes) > 0 {
-			detail["input_image_sizes"] = sizes
-		}
 	}
 	if len(c.outputs) > 0 {
 		detail["output_images"] = c.outputs
-		if sizes := imageSizeLabels(c.outputs); len(sizes) > 0 {
-			detail["output_image_sizes"] = sizes
-		}
 	}
 	if errMsg != "" {
 		detail["error"] = errMsg
