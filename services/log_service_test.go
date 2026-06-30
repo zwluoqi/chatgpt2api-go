@@ -1,8 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,32 @@ import (
 
 	"chatgpt2api-go/config"
 )
+
+func TestLoggedCallRecordsImageSize(t *testing.T) {
+	png := makeTestPNGForLog(120, 80)
+	c := &LoggedCall{}
+	c.AddOutputB64("image/png", base64.StdEncoding.EncodeToString(png))
+	if len(c.outputs) != 1 {
+		t.Fatalf("outputs len = %d, want 1", len(c.outputs))
+	}
+	out := c.outputs[0]
+	if out.Width != 120 || out.Height != 80 {
+		t.Errorf("output dims = %dx%d, want 120x80", out.Width, out.Height)
+	}
+	if out.Bytes != len(png) {
+		t.Errorf("output bytes = %d, want %d", out.Bytes, len(png))
+	}
+	if labels := imageSizeLabels(c.outputs); len(labels) != 1 || labels[0] != "120x80" {
+		t.Errorf("size labels = %v, want [120x80]", labels)
+	}
+}
+
+func makeTestPNGForLog(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}
 
 func TestLogServiceAddListDelete(t *testing.T) {
 	dir := t.TempDir()
