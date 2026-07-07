@@ -117,9 +117,9 @@ func TestExtractConversationStateSkipped(t *testing.T) {
 	if len(st.FileIDs) != 0 || st.PendingImage {
 		t.Fatalf("skip 场景不应有图片/挂起任务, got %+v", st)
 	}
-	// 新端点下 skipped_mainline 会与成功图片同时出现，故不再据此提前停止轮询。
-	if !shouldContinuePolling(st) {
-		t.Error("skipped_mainline 不应再作为终止信号（图片可能随后落地）")
+	// 旧端点下 skipped_mainline 是终态，应据此提前停止轮询。
+	if shouldContinuePolling(st) {
+		t.Error("skipped_mainline 且无挂起任务应停止轮询")
 	}
 }
 
