@@ -61,15 +61,6 @@ func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued boo
 	return meta
 }
 
-// newSkippedImageError 构造上游跳过出图（skipped_mainline）的错误。
-func newSkippedImageError(meta map[string]any) *ImageGenerationError {
-	return &ImageGenerationError{
-		Message: "上游跳过了图片生成（skipped_mainline），疑似官方图片编辑服务异常，请稍后重试",
-		Reason:  "upstream_skipped_image",
-		Meta:    meta,
-	}
-}
-
 func buildImageTextResult(prompt, text string) map[string]any {
 	// 上游返回文本而非图片：追加"安全政策"关键词，方便上游判定。
 	text = appendSafetyKeyword(strings.TrimSpace(text), "upstream_text_response")
@@ -701,10 +692,13 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 		"paragen_cot_summary_display_override": "allow",
 		"reset_rate_limits":                    false,
 		"suggestions":                          []any{},
-		"supported_encodings":                  []any{},
-		"system_hints":                         []any{"picture_v2"},
-		"variant_purpose":                      "comparison_implicit",
-		"websocket_request_id":                 uuid.New().String(),
+		// 图生图迁移到新端点 /backend-api/f/conversation：旧端点会 skipped_mainline 不出图；
+		// 新端点需声明 supports_buffering 与 delta 编码 v1。
+		"supports_buffering":   true,
+		"supported_encodings":  []any{"v1"},
+		"system_hints":         []any{"picture_v2"},
+		"variant_purpose":      "comparison_implicit",
+		"websocket_request_id": uuid.New().String(),
 		"client_contextual_info": map[string]any{
 			"is_dark_mode":      false,
 			"time_since_loaded": rand.Intn(450) + 50,
@@ -716,8 +710,11 @@ func sendEditConversation(s *session, accessToken, deviceID, chatToken string, p
 		},
 	}
 
+	const editPath = "/backend-api/f/conversation"
+	headers["x-openai-target-path"] = editPath
+	headers["x-openai-target-route"] = editPath
 	resp, err := retry(func() (*fhttp.Response, error) {
-		return s.postJSON(baseURL+"/backend-api/conversation", headers, body, 180*time.Second)
+		return s.postJSON(baseURL+editPath, headers, body, 180*time.Second)
 	}, 3, 2*time.Second)
 	if err != nil {
 		return nil, &ImageGenerationError{Message: fmt.Sprintf("conversation request failed: %v", err)}
@@ -750,10 +747,11 @@ type sseResult struct {
 	// PendingImage: 存在 image_gen_async / image_gen_task_id 的占位 tool 消息，
 	// 表示图片正在异步生成，应继续轮询直到拿到 asset。
 	PendingImage bool
-	// SkippedImage: 模型对图片工具回了 {"skipped_mainline":true} 且没有挂起的
-	// 图片任务——上游直接跳过了出图（常见于 auto 路由到不支持附件的 mini 模型）。
-	// 据此可提前失败，避免干等到超时。
+	// SkippedImage: 模型对图片工具回了 {"skipped_mainline":true}。
 	SkippedImage bool
+	// DispatchStalled: 模型已向图片工具下发出图调用（code 消息、is_complete/stop、
+	// 会话叶子），但始终没有 image_gen 占位/图片产出——上游异步图片任务未启动/卡死。
+	DispatchStalled bool
 	// 仅在轮询超时时填充，便于落到日志面板排查。
 	DiagMessages string // 最后一次会话 mapping 的逐条消息清单
 	DiagRaw      string // 最后一次会话响应原始 body（截断）
@@ -834,6 +832,38 @@ func isSkippedMainlineMessage(message map[string]any) bool {
 	// 只认 true，避免误判
 	compact := strings.ReplaceAll(txt, " ", "")
 	return strings.Contains(compact, "\"skipped_mainline\":true")
+}
+
+// isStalledImageDispatch 判断某个 mapping 节点是否为"已完成、发给图片工具的出图调用、
+// 且是会话叶子"——即模型已下发出图请求但后面没有任何图片任务/图片跟进。
+// 传入完整节点（含 children）。
+func isStalledImageDispatch(node map[string]any) bool {
+	msg, _ := node["message"].(map[string]any)
+	if msg == nil || messageRole(msg) != "assistant" {
+		return false
+	}
+	if ch, ok := node["children"].([]any); !ok || len(ch) != 0 {
+		return false // 必须是叶子
+	}
+	content, _ := msg["content"].(map[string]any)
+	if content == nil || strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) != "code" {
+		return false
+	}
+	recipient := strings.TrimSpace(fmt.Sprintf("%v", msg["recipient"]))
+	if recipient == "" || recipient == "all" || recipient == "<nil>" {
+		return false // 必须是发给工具的调用
+	}
+	meta, _ := msg["metadata"].(map[string]any)
+	if meta == nil {
+		return false
+	}
+	if done, ok := meta["is_complete"].(bool); ok && done {
+		return true
+	}
+	if _, ok := meta["finish_details"].(map[string]any); ok {
+		return true
+	}
+	return false
 }
 
 // isAssistantTurnComplete 判断是否为"面向用户、已结束本轮"的 assistant 文本消息。
@@ -994,6 +1024,8 @@ func mergeImageResultState(base, next sseResult) sseResult {
 	if next.SkippedImage {
 		merged.SkippedImage = true
 	}
+	// 以最新一次为准（占位/图片后期出现则自动解除卡死判定）
+	merged.DispatchStalled = next.DispatchStalled
 	if next.DiagMessages != "" {
 		merged.DiagMessages = next.DiagMessages
 	}
@@ -1012,10 +1044,9 @@ func shouldContinuePolling(result sseResult) bool {
 	if result.TurnComplete && !result.PendingImage {
 		return false
 	}
-	// 上游直接跳过了出图（skipped_mainline）且无挂起任务 → 立即结束，别干等超时。
-	if result.SkippedImage && !result.PendingImage {
-		return false
-	}
+	// 注意：新端点 /f/conversation 下 skipped_mainline 会与成功的图片“同时”出现，
+	// 因此不能再把 skipped_mainline 当作终止信号（否则会在图片落地前误判失败）。
+	// 图片检测由 FileIDs 命中来判定，genuine 无图则自然超时。
 	return true
 }
 
@@ -1254,6 +1285,9 @@ func extractConversationState(mapping map[string]any) sseResult {
 		if !ok {
 			continue
 		}
+		if isStalledImageDispatch(nodeMap) {
+			result.DispatchStalled = true
+		}
 		message, _ := nodeMap["message"].(map[string]any)
 		if message == nil {
 			continue
@@ -1343,6 +1377,15 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 			elapsed := time.Since(started).Truncate(time.Second)
 			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s skipped=%v text=%s\n",
 				tokenPrefix, conversationID, elapsed, lastResult.SkippedImage, truncate(strings.TrimSpace(lastResult.Text), 200))
+			return lastResult
+		}
+		// 出图请求已下发但异步任务始终没起来（skipped_mainline 或 is_complete 的空调用），
+		// 且无挂起占位、无图片。给 60s 保守门槛（远宽于健康流程出占位所需时间），仍卡死则
+		// 提前结束，避免干等满超时。FileIDs 命中优先，成功出图不受影响。
+		if (state.DispatchStalled || state.SkippedImage) && !state.PendingImage && time.Since(started) >= 60*time.Second {
+			elapsed := time.Since(started).Truncate(time.Second)
+			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s dispatch_stalled=%v skipped=%v\n",
+				tokenPrefix, conversationID, elapsed, state.DispatchStalled, state.SkippedImage)
 			return lastResult
 		}
 		elapsed := time.Since(started).Truncate(time.Second)
@@ -1593,9 +1636,13 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
-		if state.SkippedImage {
-			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
-			return nil, newSkippedImageError(meta)
+		if (state.DispatchStalled || state.SkippedImage) && responseText == "" {
+			fmt.Printf("[image-upstream] stalled token=%s... error=upstream dispatched image but produced none (flaky edit service)\n", tokenPrefix)
+			return nil, &ImageGenerationError{
+				Message: "上游已下发出图请求但图片始终未产出（官方图片编辑服务当前不稳定），请稍后重试",
+				Reason:  "upstream_image_stalled",
+				Meta:    meta,
+			}
 		}
 		if responseText != "" {
 			if state.Rejected {
@@ -1811,9 +1858,13 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
-		if state.SkippedImage {
-			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
-			return nil, newSkippedImageError(meta)
+		if (state.DispatchStalled || state.SkippedImage) && responseText == "" {
+			fmt.Printf("[image-upstream] stalled token=%s... error=upstream dispatched image but produced none (flaky edit service)\n", tokenPrefix)
+			return nil, &ImageGenerationError{
+				Message: "上游已下发出图请求但图片始终未产出（官方图片编辑服务当前不稳定），请稍后重试",
+				Reason:  "upstream_image_stalled",
+				Meta:    meta,
+			}
 		}
 		if responseText != "" {
 			if state.Rejected {

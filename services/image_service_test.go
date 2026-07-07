@@ -117,8 +117,44 @@ func TestExtractConversationStateSkipped(t *testing.T) {
 	if len(st.FileIDs) != 0 || st.PendingImage {
 		t.Fatalf("skip 场景不应有图片/挂起任务, got %+v", st)
 	}
-	if shouldContinuePolling(st) {
-		t.Error("skip 且无挂起任务应立即停止轮询（早停）")
+	// 新端点下 skipped_mainline 会与成功图片同时出现，故不再据此提前停止轮询。
+	if !shouldContinuePolling(st) {
+		t.Error("skipped_mainline 不应再作为终止信号（图片可能随后落地）")
+	}
+}
+
+func TestStalledImageDispatchDetection(t *testing.T) {
+	stalledLeaf := map[string]any{
+		"children": []any{},
+		"message": map[string]any{
+			"author":    map[string]any{"role": "assistant"},
+			"recipient": "t2uay3k.sj1i4kz",
+			"content":   map[string]any{"content_type": "code", "text": `{"size":"1792x1024","prompt":"x"}`},
+			"metadata":  map[string]any{"is_complete": true, "finish_details": map[string]any{"type": "stop"}},
+		},
+	}
+	if !isStalledImageDispatch(stalledLeaf) {
+		t.Error("应识别 stalled 出图调用叶子")
+	}
+	withChild := map[string]any{"children": []any{"c"}, "message": stalledLeaf["message"]}
+	if isStalledImageDispatch(withChild) {
+		t.Error("有子节点不应命中（健康流程后面还有占位/图片）")
+	}
+	notDone := map[string]any{
+		"children": []any{},
+		"message": map[string]any{
+			"author": map[string]any{"role": "assistant"}, "recipient": "t2uay3k.sj1i4kz",
+			"content": map[string]any{"content_type": "code", "text": `{"prompt":"x"}`}, "metadata": map[string]any{},
+		},
+	}
+	if isStalledImageDispatch(notDone) {
+		t.Error("未完成的调用不应命中")
+	}
+
+	// extractConversationState 应置位 DispatchStalled
+	mapping := map[string]any{"tool": stalledLeaf}
+	if st := extractConversationState(mapping); !st.DispatchStalled {
+		t.Error("应检测到 DispatchStalled")
 	}
 }
 
