@@ -80,6 +80,48 @@ func TestImageMessageClassification(t *testing.T) {
 	}
 }
 
+func msgSkippedMainline() map[string]any {
+	return map[string]any{
+		"author":    map[string]any{"role": "assistant"},
+		"recipient": "t2uay3k.sj1i4kz",
+		"content":   map[string]any{"content_type": "code", "text": `{"skipped_mainline":true}`},
+		"end_turn":  false,
+	}
+}
+
+func TestSkippedMainlineDetection(t *testing.T) {
+	if !isSkippedMainlineMessage(msgSkippedMainline()) {
+		t.Error("应识别 skipped_mainline 消息")
+	}
+	// skipped_mainline:false 不应命中
+	m := msgSkippedMainline()
+	m["content"].(map[string]any)["text"] = `{"skipped_mainline":false}`
+	if isSkippedMainlineMessage(m) {
+		t.Error("skipped_mainline:false 不应命中")
+	}
+	// 普通 dalle 工具调用不应命中
+	if isSkippedMainlineMessage(msgDalleToolCall()) {
+		t.Error("普通工具调用不应命中")
+	}
+}
+
+func TestExtractConversationStateSkipped(t *testing.T) {
+	mapping := map[string]any{
+		"n1": map[string]any{"message": msgDalleToolCall()},
+		"n2": map[string]any{"message": msgSkippedMainline()},
+	}
+	st := extractConversationState(mapping)
+	if !st.SkippedImage {
+		t.Fatal("应检测到 SkippedImage")
+	}
+	if len(st.FileIDs) != 0 || st.PendingImage {
+		t.Fatalf("skip 场景不应有图片/挂起任务, got %+v", st)
+	}
+	if shouldContinuePolling(st) {
+		t.Error("skip 且无挂起任务应立即停止轮询（早停）")
+	}
+}
+
 func TestShouldContinuePollingEarlyStop(t *testing.T) {
 	// 纯文字答复结束、无挂起图片任务 → 立即停止
 	if shouldContinuePolling(sseResult{Text: "need an image", TurnComplete: true, PendingImage: false}) {

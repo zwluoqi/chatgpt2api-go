@@ -61,6 +61,15 @@ func buildImageErrorMeta(state sseResult, waitedForResult, waitedWhileQueued boo
 	return meta
 }
 
+// newSkippedImageError 构造上游跳过出图（skipped_mainline）的错误。
+func newSkippedImageError(meta map[string]any) *ImageGenerationError {
+	return &ImageGenerationError{
+		Message: "上游跳过了图片生成（skipped_mainline），疑似官方图片编辑服务异常，请稍后重试",
+		Reason:  "upstream_skipped_image",
+		Meta:    meta,
+	}
+}
+
 func buildImageTextResult(prompt, text string) map[string]any {
 	// 上游返回文本而非图片：追加"安全政策"关键词，方便上游判定。
 	text = appendSafetyKeyword(strings.TrimSpace(text), "upstream_text_response")
@@ -716,6 +725,10 @@ type sseResult struct {
 	// PendingImage: 存在 image_gen_async / image_gen_task_id 的占位 tool 消息，
 	// 表示图片正在异步生成，应继续轮询直到拿到 asset。
 	PendingImage bool
+	// SkippedImage: 模型对图片工具回了 {"skipped_mainline":true} 且没有挂起的
+	// 图片任务——上游直接跳过了出图（常见于 auto 路由到不支持附件的 mini 模型）。
+	// 据此可提前失败，避免干等到超时。
+	SkippedImage bool
 	// 仅在轮询超时时填充，便于落到日志面板排查。
 	DiagMessages string // 最后一次会话 mapping 的逐条消息清单
 	DiagRaw      string // 最后一次会话响应原始 body（截断）
@@ -774,6 +787,28 @@ func isPendingImageTask(message map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+// isSkippedMainlineMessage 判断消息是否为模型对图片工具回的
+// {"skipped_mainline":true}——即上游跳过了出图。
+func isSkippedMainlineMessage(message map[string]any) bool {
+	if message == nil || messageRole(message) != "assistant" {
+		return false
+	}
+	content, _ := message["content"].(map[string]any)
+	if content == nil {
+		return false
+	}
+	if strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) != "code" {
+		return false
+	}
+	txt, _ := content["text"].(string)
+	if !strings.Contains(txt, "skipped_mainline") {
+		return false
+	}
+	// 只认 true，避免误判
+	compact := strings.ReplaceAll(txt, " ", "")
+	return strings.Contains(compact, "\"skipped_mainline\":true")
 }
 
 // isAssistantTurnComplete 判断是否为"面向用户、已结束本轮"的 assistant 文本消息。
@@ -931,6 +966,9 @@ func mergeImageResultState(base, next sseResult) sseResult {
 	if next.TurnComplete {
 		merged.TurnComplete = true
 	}
+	if next.SkippedImage {
+		merged.SkippedImage = true
+	}
 	if next.DiagMessages != "" {
 		merged.DiagMessages = next.DiagMessages
 	}
@@ -947,6 +985,10 @@ func shouldContinuePolling(result sseResult) bool {
 	// 模型本轮已结束且没有挂起的图片生成任务 = 不会再有图片（纯文字答复，如拒绝/
 	// 要求参考图），无需再轮询到超时，立即结束。
 	if result.TurnComplete && !result.PendingImage {
+		return false
+	}
+	// 上游直接跳过了出图（skipped_mainline）且无挂起任务 → 立即结束，别干等超时。
+	if result.SkippedImage && !result.PendingImage {
 		return false
 	}
 	return true
@@ -1143,6 +1185,9 @@ func parseSSE(resp *fhttp.Response) sseResult {
 			if isAssistantTurnComplete(message) {
 				result.TurnComplete = true
 			}
+			if isSkippedMainlineMessage(message) {
+				result.SkippedImage = true
+			}
 		}
 	}
 
@@ -1193,6 +1238,9 @@ func extractConversationState(mapping map[string]any) sseResult {
 		}
 		if isAssistantTurnComplete(message) {
 			result.TurnComplete = true
+		}
+		if isSkippedMainlineMessage(message) {
+			result.SkippedImage = true
 		}
 		if !isUserFacingAssistant(message) {
 			continue
@@ -1263,10 +1311,13 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 			fmt.Printf("[image-poll] success token=%s... conversation=%s elapsed=%s\n", tokenPrefix, conversationID, elapsed)
 			return lastResult
 		}
-		if strings.TrimSpace(state.Text) != "" && !shouldContinuePolling(state) {
+		// 终止条件（用累计的 lastResult 判定）：被拒/限流/沙盒文本、模型本轮结束无
+		// 挂起任务、或上游 skipped_mainline 跳过出图——均无需再等，立即返回。
+		// 注意 skipped_mainline 场景没有面向用户文本，因此不能再用 text!="" 作为前置门槛。
+		if !shouldContinuePolling(lastResult) {
 			elapsed := time.Since(started).Truncate(time.Second)
-			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s text=%s\n",
-				tokenPrefix, conversationID, elapsed, truncate(state.Text, 200))
+			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s skipped=%v text=%s\n",
+				tokenPrefix, conversationID, elapsed, lastResult.SkippedImage, truncate(strings.TrimSpace(lastResult.Text), 200))
 			return lastResult
 		}
 		elapsed := time.Since(started).Truncate(time.Second)
@@ -1517,6 +1568,10 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
+		if state.SkippedImage {
+			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
+			return nil, newSkippedImageError(meta)
+		}
 		if responseText != "" {
 			if state.Rejected {
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
@@ -1731,6 +1786,10 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
+		if state.SkippedImage {
+			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
+			return nil, newSkippedImageError(meta)
+		}
 		if responseText != "" {
 			if state.Rejected {
 				fmt.Printf("[image-edit-upstream] rejected token=%s... code=%s error=%s\n",
