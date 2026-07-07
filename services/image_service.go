@@ -440,6 +440,31 @@ func ExtractImageQuotaRestoreAt(message string, now time.Time) *time.Time {
 	return &restoreAt
 }
 
+// IsFileUploadThrottledError 判断是否为文件上传限流（编辑上传图片时的 429 throttled）。
+// 典型报文：file upload init failed: 429 {"detail":{"code":"throttled",...,
+// "message":"You've reached our limit of file uploads. Please try again in 15 hours."}}
+func IsFileUploadThrottledError(message string) bool {
+	text := strings.ToLower(message)
+	if strings.Contains(text, "limit of file uploads") {
+		return true
+	}
+	return strings.Contains(text, "throttled") &&
+		(strings.Contains(text, "file upload") || strings.Contains(text, "file_upload"))
+}
+
+// ExtractFileUploadRestoreAt 从限流报文里解析恢复时间（如 "try again in 15 hours"）。
+func ExtractFileUploadRestoreAt(message string, now time.Time) *time.Time {
+	if !IsFileUploadThrottledError(message) {
+		return nil
+	}
+	duration, count := parseImageQuotaDuration(message)
+	if count == 0 || duration <= 0 {
+		return nil
+	}
+	restoreAt := now.Add(duration).UTC().Truncate(time.Second)
+	return &restoreAt
+}
+
 func extractConversationIDFromPayload(payload string) string {
 	match := conversationIDPattern.FindStringSubmatch(payload)
 	if len(match) < 2 {

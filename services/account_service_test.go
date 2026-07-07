@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func tempAccountService(t *testing.T) *AccountService {
@@ -27,6 +28,63 @@ func TestAccountServiceAddAndList(t *testing.T) {
 	accounts := as.ListAccounts()
 	if len(accounts) != 2 {
 		t.Errorf("len(accounts) = %d, want 2", len(accounts))
+	}
+}
+
+func TestEditLimitedAccountExcludedFromEdit(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a", "token_b"})
+	// 把 token_a 标记为文件上传限流（未来恢复）
+	future := time.Now().Add(15 * time.Hour).Format(time.RFC3339)
+	as.UpdateAccount("token_a", map[string]any{"edit_limited": true, "edit_restore_at": future})
+
+	if c := as.EditLimitedCount(); c != 1 {
+		t.Fatalf("EditLimitedCount = %d, want 1", c)
+	}
+
+	// 编辑选号：连续多次都不应选到 token_a
+	for i := 0; i < 6; i++ {
+		tok, err := as.GetAvailableEditAccessToken()
+		if err != nil {
+			t.Fatalf("GetAvailableEditAccessToken err: %v", err)
+		}
+		if tok == "token_a" {
+			t.Fatal("图生图不应选中受限的 token_a")
+		}
+	}
+
+	// 文生图选号仍可包含 token_a
+	seenA := false
+	for i := 0; i < 6; i++ {
+		if tok, _ := as.GetAvailableAccessToken(); tok == "token_a" {
+			seenA = true
+		}
+	}
+	if !seenA {
+		t.Error("文生图应仍可使用 token_a")
+	}
+
+	// publicItems 应暴露 editLimited=true
+	for _, it := range as.ListAccounts() {
+		if it["access_token"] == "token_a" {
+			if el, _ := it["editLimited"].(bool); !el {
+				t.Error("token_a 的 editLimited 应为 true")
+			}
+		}
+	}
+}
+
+func TestEditLimitAutoRecovers(t *testing.T) {
+	as := tempAccountService(t)
+	as.AddAccounts([]string{"token_a"})
+	// 恢复时间已过 → 视为解除
+	past := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	as.UpdateAccount("token_a", map[string]any{"edit_limited": true, "edit_restore_at": past})
+	if c := as.EditLimitedCount(); c != 0 {
+		t.Fatalf("到恢复时间应自动解除, EditLimitedCount = %d, want 0", c)
+	}
+	if _, err := as.GetAvailableEditAccessToken(); err != nil {
+		t.Errorf("恢复后应可用于图生图: %v", err)
 	}
 }
 

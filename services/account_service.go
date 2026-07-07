@@ -85,6 +85,36 @@ func isImageAccountAvailable(account map[string]any) bool {
 	return quota > 0
 }
 
+// editLimitActive 判断账号当前是否处于"文件上传限流（无法图生图）"状态。
+// 到达 edit_restore_at 后自动视为解除。
+func editLimitActive(account map[string]any) bool {
+	if account == nil {
+		return false
+	}
+	limited, _ := account["edit_limited"].(bool)
+	if !limited {
+		return false
+	}
+	ra := cleanToken(account["edit_restore_at"])
+	if ra == "" {
+		return true // 限流但无明确恢复时间，保守视为仍受限
+	}
+	t, err := time.Parse(time.RFC3339, ra)
+	if err != nil {
+		return true
+	}
+	return time.Now().Before(t)
+}
+
+// isEditAccountAvailable：可用于图生图（编辑）的账号——在通用可用基础上，额外排除
+// 处于文件上传限流的账号。
+func isEditAccountAvailable(account map[string]any) bool {
+	if !isImageAccountAvailable(account) {
+		return false
+	}
+	return !editLimitActive(account)
+}
+
 func toInt(v any) int {
 	if v == nil {
 		return 0
@@ -258,6 +288,22 @@ func normalizeAccount(item map[string]any) map[string]any {
 	} else {
 		normalized["restore_at"] = ra
 	}
+	// 编辑（文件上传）限流状态，独立于图片额度限流：账号仍可文生图，但暂时不能图生图。
+	editLimited, _ := normalized["edit_limited"].(bool)
+	era := cleanToken(normalized["edit_restore_at"])
+	if editLimited && era != "" {
+		if t, err := time.Parse(time.RFC3339, era); err == nil && !time.Now().Before(t) {
+			// 已到恢复时间，自动解除
+			editLimited = false
+			era = ""
+		}
+	}
+	normalized["edit_limited"] = editLimited
+	if era == "" {
+		normalized["edit_restore_at"] = nil
+	} else {
+		normalized["edit_restore_at"] = era
+	}
 	normalized["success"] = toInt(normalized["success"])
 	normalized["fail"] = toInt(normalized["fail"])
 	syncImageStatusByQuota(normalized)
@@ -429,6 +475,8 @@ func (as *AccountService) publicItems(accounts []map[string]any) []map[string]an
 			"limits_progress":    account["limits_progress"],
 			"default_model_slug": account["default_model_slug"],
 			"restoreAt":          account["restore_at"],
+			"editLimited":        editLimitActive(account),
+			"editRestoreAt":      account["edit_restore_at"],
 			"success":            toInt(account["success"]),
 			"fail":               toInt(account["fail"]),
 			"lastUsedAt":         account["last_used_at"],
@@ -514,6 +562,40 @@ func (as *AccountService) GetAvailableAccessToken() (string, error) {
 
 func (as *AccountService) NextToken() (string, error) {
 	return as.GetAvailableAccessToken()
+}
+
+// GetAvailableEditAccessToken 用于图生图（编辑）：排除处于文件上传限流的账号。
+func (as *AccountService) GetAvailableEditAccessToken() (string, error) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	var tokens []string
+	for _, item := range as.accounts {
+		if !isEditAccountAvailable(item) {
+			continue
+		}
+		if token := cleanToken(item["access_token"]); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("no edit-capable tokens found in %s", as.storeFile)
+	}
+	accessToken := tokens[as.index%len(tokens)]
+	as.index++
+	return accessToken, nil
+}
+
+// EditLimitedCount 返回当前处于文件上传限流（无法图生图）的账号数量。
+func (as *AccountService) EditLimitedCount() int {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	count := 0
+	for _, item := range as.accounts {
+		if editLimitActive(item) {
+			count++
+		}
+	}
+	return count
 }
 
 func (as *AccountService) GetAccount(accessToken string) map[string]any {

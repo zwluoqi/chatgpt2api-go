@@ -11,6 +11,7 @@ import {
   CircleOff,
   Copy,
   Download,
+  ImageOff,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -87,6 +88,7 @@ const metricCards = [
   { key: "total", label: "账户总数", color: "text-stone-900", icon: UserRound },
   { key: "active", label: "正常账户", color: "text-emerald-600", icon: CheckCircle2 },
   { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
+  { key: "editLimited", label: "无法编辑", color: "text-amber-600", icon: ImageOff },
   { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
   { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
   { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
@@ -245,11 +247,12 @@ export default function AccountsPage() {
     const total = accounts.length;
     const active = accounts.filter((item) => item.status === "正常").length;
     const limited = accounts.filter((item) => item.status === "限流").length;
+    const editLimited = accounts.filter((item) => item.editLimited).length;
     const abnormal = accounts.filter((item) => item.status === "异常").length;
     const disabled = accounts.filter((item) => item.status === "禁用").length;
     const quota = formatQuotaSummary(accounts);
 
-    return { total, active, limited, abnormal, disabled, quota };
+    return { total, active, limited, editLimited, abnormal, disabled, quota };
   }, [accounts]);
 
   const selectedTokens = useMemo(() => {
@@ -711,10 +714,20 @@ export default function AccountsPage() {
                         <td className="px-4 py-3 text-xs leading-5 text-stone-500">
                           {(() => {
                             const restore = formatRestoreAt(account.restoreAt);
+                            const editRestore = account.editLimited ? formatRestoreAt(account.editRestoreAt) : null;
                             return (
                               <div className="space-y-0.5">
                                 {restore.relative ? <div className="font-medium text-stone-700">{restore.relative}</div> : null}
                                 <div>{restore.absolute}</div>
+                                {editRestore ? (
+                                  <div className="mt-1 border-t border-amber-100 pt-1 text-amber-600">
+                                    <div className="flex items-center gap-1 font-medium">
+                                      <ImageOff className="size-3" />
+                                      图生图限流{editRestore.relative ? ` · ${editRestore.relative}` : ""}
+                                    </div>
+                                    {editRestore.absolute !== "—" ? <div>{editRestore.absolute}</div> : null}
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })()}

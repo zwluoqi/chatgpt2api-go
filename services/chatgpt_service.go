@@ -53,6 +53,19 @@ func (svc *ChatGPTService) handleImagePoolFailure(requestToken, tokenPrefix, log
 		return account, true
 	}
 
+	// 文件上传限流：账号暂时无法图生图（但仍可文生图）。标记 edit_limited，换号重试。
+	if IsFileUploadThrottledError(message) {
+		updates := map[string]any{"edit_limited": true, "edit_restore_at": nil}
+		if restoreAt := ExtractFileUploadRestoreAt(message, time.Now()); restoreAt != nil {
+			updates["edit_restore_at"] = restoreAt.Format(time.RFC3339)
+		}
+		if updated := svc.AccountService.UpdateAccount(requestToken, updates); updated != nil {
+			account = updated
+		}
+		fmt.Printf("[%s] mark edit-limited token=%s... restore_at=%v\n", logPrefix, tokenPrefix, updates["edit_restore_at"])
+		return account, true
+	}
+
 	return account, false
 }
 
@@ -162,7 +175,7 @@ func (svc *ChatGPTService) EditWithPool(prompt string, images []RequestImage, mo
 
 	for index := 1; index <= n; index++ {
 		for {
-			requestToken, err := svc.AccountService.GetAvailableAccessToken()
+			requestToken, err := svc.AccountService.GetAvailableEditAccessToken()
 			if err != nil {
 				fmt.Printf("[image-edit] stop index=%d/%d error=%v\n", index, n, err)
 				break

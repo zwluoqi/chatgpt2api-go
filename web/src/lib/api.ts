@@ -20,6 +20,8 @@ export type Account = {
   }>;
   default_model_slug?: string | null;
   restoreAt?: string | null;
+  editLimited?: boolean;
+  editRestoreAt?: string | null;
   success: number;
   fail: number;
   lastUsedAt: string | null;

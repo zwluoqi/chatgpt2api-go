@@ -257,6 +257,27 @@ func toStr(v any) string {
 	return ""
 }
 
+func TestFileUploadThrottleDetection(t *testing.T) {
+	msg := `file upload init failed: 429 {"detail":{"code":"throttled","error_code":"throttled","message":"You've reached our limit of file uploads. Please try again in 15 hours.","type":"throttled"}}`
+	if !IsFileUploadThrottledError(msg) {
+		t.Fatal("应识别文件上传限流")
+	}
+	if IsFileUploadThrottledError("some other error") {
+		t.Error("普通错误不应命中")
+	}
+	if IsImageQuotaExceededError(msg) {
+		t.Error("文件上传限流不应被当作图片额度限流")
+	}
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	ra := ExtractFileUploadRestoreAt(msg, now)
+	if ra == nil {
+		t.Fatal("应解析出恢复时间")
+	}
+	if got := ra.Sub(now); got != 15*time.Hour {
+		t.Errorf("恢复时长 = %v, want 15h", got)
+	}
+}
+
 func TestGetImageDimensionsPNG(t *testing.T) {
 	// Minimal 1x1 PNG header
 	pngHeader := []byte{
