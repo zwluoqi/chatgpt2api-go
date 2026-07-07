@@ -122,66 +122,6 @@ func TestExtractConversationStateSkipped(t *testing.T) {
 	}
 }
 
-func TestStalledImageDispatchDetection(t *testing.T) {
-	// 已完成、发给图片工具、叶子的 code 调用 → 命中
-	stalledLeaf := map[string]any{
-		"children": []any{},
-		"message": map[string]any{
-			"author":    map[string]any{"role": "assistant"},
-			"recipient": "t2uay3k.sj1i4kz",
-			"content":   map[string]any{"content_type": "code", "text": `{"size":"1536x864","prompt":"x"}`},
-			"end_turn":  false,
-			"metadata":  map[string]any{"is_complete": true, "finish_details": map[string]any{"type": "stop"}},
-		},
-	}
-	if !isStalledImageDispatch(stalledLeaf) {
-		t.Error("应识别 stalled 出图调用叶子")
-	}
-	// 非叶子（有 children）→ 不命中（健康流程后面还有占位/图片）
-	withChild := map[string]any{
-		"children": []any{"someChild"},
-		"message":  stalledLeaf["message"],
-	}
-	if isStalledImageDispatch(withChild) {
-		t.Error("有子节点不应命中")
-	}
-	// 未完成（无 is_complete / finish_details）→ 不命中
-	notDone := map[string]any{
-		"children": []any{},
-		"message": map[string]any{
-			"author":    map[string]any{"role": "assistant"},
-			"recipient": "t2uay3k.sj1i4kz",
-			"content":   map[string]any{"content_type": "code", "text": `{"prompt":"x"}`},
-			"metadata":  map[string]any{},
-		},
-	}
-	if isStalledImageDispatch(notDone) {
-		t.Error("未完成的调用不应命中")
-	}
-}
-
-func TestExtractConversationStateStalled(t *testing.T) {
-	mapping := map[string]any{
-		"root": map[string]any{"children": []any{"tool"}, "message": map[string]any{"author": map[string]any{"role": "user"}, "content": map[string]any{"content_type": "text", "parts": []any{"draw"}}}},
-		"tool": map[string]any{
-			"children": []any{},
-			"message": map[string]any{
-				"author":    map[string]any{"role": "assistant"},
-				"recipient": "t2uay3k.sj1i4kz",
-				"content":   map[string]any{"content_type": "code", "text": `{"size":"1536x864","prompt":"x"}`},
-				"metadata":  map[string]any{"is_complete": true, "finish_details": map[string]any{"type": "stop"}},
-			},
-		},
-	}
-	st := extractConversationState(mapping)
-	if !st.DispatchStalled {
-		t.Fatal("应检测到 DispatchStalled")
-	}
-	if st.PendingImage || len(st.FileIDs) != 0 {
-		t.Fatalf("stalled 场景不应有挂起/图片, got %+v", st)
-	}
-}
-
 func TestShouldContinuePollingEarlyStop(t *testing.T) {
 	// 纯文字答复结束、无挂起图片任务 → 立即停止
 	if shouldContinuePolling(sseResult{Text: "need an image", TurnComplete: true, PendingImage: false}) {

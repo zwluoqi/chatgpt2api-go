@@ -70,15 +70,6 @@ func newSkippedImageError(meta map[string]any) *ImageGenerationError {
 	}
 }
 
-// newStalledImageError 构造"出图请求已下发但图片任务始终未产出"的错误。
-func newStalledImageError(meta map[string]any) *ImageGenerationError {
-	return &ImageGenerationError{
-		Message: "上游已下发出图请求但图片任务始终未产出，疑似官方图片服务异常，请稍后重试",
-		Reason:  "upstream_image_stalled",
-		Meta:    meta,
-	}
-}
-
 func buildImageTextResult(prompt, text string) map[string]any {
 	// 上游返回文本而非图片：追加"安全政策"关键词，方便上游判定。
 	text = appendSafetyKeyword(strings.TrimSpace(text), "upstream_text_response")
@@ -738,10 +729,6 @@ type sseResult struct {
 	// 图片任务——上游直接跳过了出图（常见于 auto 路由到不支持附件的 mini 模型）。
 	// 据此可提前失败，避免干等到超时。
 	SkippedImage bool
-	// DispatchStalled: 模型已向图片工具下发了出图调用（code 消息，含 prompt）、消息
-	// 已完成(is_complete/finish_details)且是会话叶子，但始终没有 image_gen 占位/图片
-	// 产出——异步图片任务未启动/卡死。据此（配合时间门槛）可提前失败。
-	DispatchStalled bool
 	// 仅在轮询超时时填充，便于落到日志面板排查。
 	DiagMessages string // 最后一次会话 mapping 的逐条消息清单
 	DiagRaw      string // 最后一次会话响应原始 body（截断）
@@ -822,41 +809,6 @@ func isSkippedMainlineMessage(message map[string]any) bool {
 	// 只认 true，避免误判
 	compact := strings.ReplaceAll(txt, " ", "")
 	return strings.Contains(compact, "\"skipped_mainline\":true")
-}
-
-// isStalledImageDispatch 判断某个 mapping 节点是否为"已完成、发给图片工具的出图调用、
-// 且是会话叶子"——即模型已下发出图请求但后面没有任何图片任务/图片跟进。
-// 传入的是完整节点（含 children），而非仅 message。
-func isStalledImageDispatch(node map[string]any) bool {
-	msg, _ := node["message"].(map[string]any)
-	if msg == nil || messageRole(msg) != "assistant" {
-		return false
-	}
-	// 必须是叶子：无子节点（后面没有占位/图片跟进）
-	if ch, ok := node["children"].([]any); !ok || len(ch) != 0 {
-		return false
-	}
-	content, _ := msg["content"].(map[string]any)
-	if content == nil || strings.TrimSpace(fmt.Sprintf("%v", content["content_type"])) != "code" {
-		return false
-	}
-	// 必须是发给工具的调用（recipient 非 all）
-	recipient := strings.TrimSpace(fmt.Sprintf("%v", msg["recipient"]))
-	if recipient == "" || recipient == "all" || recipient == "<nil>" {
-		return false
-	}
-	meta, _ := msg["metadata"].(map[string]any)
-	if meta == nil {
-		return false
-	}
-	// 消息已完成：is_complete==true 或存在 finish_details
-	if done, ok := meta["is_complete"].(bool); ok && done {
-		return true
-	}
-	if _, ok := meta["finish_details"].(map[string]any); ok {
-		return true
-	}
-	return false
 }
 
 // isAssistantTurnComplete 判断是否为"面向用户、已结束本轮"的 assistant 文本消息。
@@ -1017,9 +969,6 @@ func mergeImageResultState(base, next sseResult) sseResult {
 	if next.SkippedImage {
 		merged.SkippedImage = true
 	}
-	// DispatchStalled 反映"当前"是否仍是卡死叶子态；不做单调累计，避免占位后期出现却
-	// 仍被判死。直接以最新一次为准。
-	merged.DispatchStalled = next.DispatchStalled
 	if next.DiagMessages != "" {
 		merged.DiagMessages = next.DiagMessages
 	}
@@ -1280,9 +1229,6 @@ func extractConversationState(mapping map[string]any) sseResult {
 		if !ok {
 			continue
 		}
-		if isStalledImageDispatch(nodeMap) {
-			result.DispatchStalled = true
-		}
 		message, _ := nodeMap["message"].(map[string]any)
 		if message == nil {
 			continue
@@ -1372,14 +1318,6 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 			elapsed := time.Since(started).Truncate(time.Second)
 			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s skipped=%v text=%s\n",
 				tokenPrefix, conversationID, elapsed, lastResult.SkippedImage, truncate(strings.TrimSpace(lastResult.Text), 200))
-			return lastResult
-		}
-		// 出图请求已下发但异步任务始终未启动（无占位、无图片）——加 15s 时间门槛，
-		// 避免误伤健康流程"刚下发、占位还没出现"的一瞬。超过门槛仍是卡死叶子态即提前失败。
-		if state.DispatchStalled && !state.PendingImage && time.Since(started) >= 15*time.Second {
-			elapsed := time.Since(started).Truncate(time.Second)
-			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s dispatch_stalled=true\n",
-				tokenPrefix, conversationID, elapsed)
 			return lastResult
 		}
 		elapsed := time.Since(started).Truncate(time.Second)
@@ -1634,10 +1572,6 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
 			return nil, newSkippedImageError(meta)
 		}
-		if state.DispatchStalled {
-			fmt.Printf("[image-upstream] stalled token=%s... error=image dispatched but no task/asset produced\n", tokenPrefix)
-			return nil, newStalledImageError(meta)
-		}
 		if responseText != "" {
 			if state.Rejected {
 				fmt.Printf("[image-upstream] rejected token=%s... code=%s error=%s\n",
@@ -1855,10 +1789,6 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 		if state.SkippedImage {
 			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
 			return nil, newSkippedImageError(meta)
-		}
-		if state.DispatchStalled {
-			fmt.Printf("[image-upstream] stalled token=%s... error=image dispatched but no task/asset produced\n", tokenPrefix)
-			return nil, newStalledImageError(meta)
 		}
 		if responseText != "" {
 			if state.Rejected {
