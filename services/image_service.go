@@ -1322,6 +1322,7 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 	lastResult := sseResult{ConversationID: conversationID}
 	var lastBody []byte
 	var lastMapping map[string]any
+	stalledPolls := 0
 	for time.Since(started) < maxWait {
 		resp, err := retry(func() (*fhttp.Response, error) {
 			return s.get(
@@ -1375,13 +1376,19 @@ func pollImageIDs(s *session, accessToken, deviceID, conversationID string, time
 				tokenPrefix, conversationID, elapsed, lastResult.SkippedImage, truncate(strings.TrimSpace(lastResult.Text), 200))
 			return lastResult
 		}
-		// 出图请求已下发但异步任务始终没起来（skipped_mainline 或 is_complete 的空调用），
-		// 且无挂起占位、无图片。给 60s 保守门槛（远宽于健康流程出占位所需时间），仍卡死则
-		// 提前结束，避免干等满超时。FileIDs 命中优先，成功出图不受影响。
-		if (state.DispatchStalled || state.SkippedImage) && !state.PendingImage && time.Since(started) >= 60*time.Second {
+		// 出图请求已下发但异步任务没起来（is_complete 的空 code 调用、无占位、无图）。
+		// 实测成功出图会立即出现 image_gen 占位（PendingImage=true）、绝不会命中
+		// DispatchStalled；故这是明确终态，无需长等。要求连续 2 次轮询仍卡死（约 5s
+		// 确认，消除极小的占位创建瞬时窗口）即提前结束。FileIDs 命中优先，成功不受影响。
+		if state.DispatchStalled && !state.PendingImage && len(state.FileIDs) == 0 {
+			stalledPolls++
+		} else {
+			stalledPolls = 0
+		}
+		if stalledPolls >= 2 {
 			elapsed := time.Since(started).Truncate(time.Second)
-			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s dispatch_stalled=%v skipped=%v\n",
-				tokenPrefix, conversationID, elapsed, state.DispatchStalled, state.SkippedImage)
+			fmt.Printf("[image-poll] terminal token=%s... conversation=%s elapsed=%s dispatch_stalled=true\n",
+				tokenPrefix, conversationID, elapsed)
 			return lastResult
 		}
 		elapsed := time.Since(started).Truncate(time.Second)
