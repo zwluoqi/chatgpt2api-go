@@ -422,14 +422,15 @@ func CreateApp(
 			return
 		}
 		var body struct {
-			Enabled *bool  `json:"enabled"`
-			URL     string `json:"url"`
+			Enabled *bool    `json:"enabled"`
+			URL     string   `json:"url"`
+			URLs    []string `json:"urls"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": "invalid request body"})
 			return
 		}
-		proxy, err := UpdateProxySettings(body.Enabled, body.URL)
+		proxy, err := UpdateProxySettings(body.Enabled, body.URLs, body.URL)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return

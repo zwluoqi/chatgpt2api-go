@@ -54,6 +54,7 @@ type AccountUpdateResponse = {
 export type ProxySettings = {
   enabled: boolean;
   url: string;
+  urls: string[];
 };
 
 export type ProxyTestResult = {
@@ -187,7 +188,7 @@ export async function fetchProxy() {
   return httpRequest<{ proxy: ProxySettings }>("/api/proxy");
 }
 
-export async function updateProxy(updates: { enabled?: boolean; url?: string }) {
+export async function updateProxy(updates: { enabled?: boolean; url?: string; urls?: string[] }) {
   return httpRequest<{ proxy: ProxySettings }>("/api/proxy", {
     method: "POST",
     body: updates,

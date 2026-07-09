@@ -9,11 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type AppSettings struct {
 	AuthKey                      string
-	ProxyURL                     string
+	ProxyURL                     string   // 兼容旧字段：等于 ProxyURLs 的第一条
+	ProxyURLs                    []string // 支持配置多条代理地址，按轮询使用
 	ChatCompletionsEnabled       bool
 	InsecureSkipVerify           bool
 	Host                         string
@@ -75,22 +77,25 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 		)
 	}
 
-	proxyURL := strings.TrimSpace(os.Getenv("CHATGPT2API_PROXY_URL"))
-	if proxyURL == "" {
+	rawProxy := strings.TrimSpace(os.Getenv("CHATGPT2API_PROXY_URL"))
+	if rawProxy == "" {
 		if v, ok := rawConfig["proxy-url"]; ok {
-			proxyURL = strings.TrimSpace(fmt.Sprintf("%v", v))
+			rawProxy = proxyRawToString(v)
 		}
 	}
-	if proxyURL != "" {
-		if err := validateProxyURL(proxyURL); err != nil {
-			return nil, fmt.Errorf(
-				"invalid proxy-url: %w\n"+
-					"Please set it via:\n"+
-					"1. Environment variable: CHATGPT2API_PROXY_URL=http://host:port\n"+
-					"2. Or in config.json: \"proxy-url\": \"http://host:port\"",
-				err,
-			)
-		}
+	proxyURLs, err := parseProxyList(rawProxy)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"invalid proxy-url: %w\n"+
+				"Please set it via:\n"+
+				"1. Environment variable: CHATGPT2API_PROXY_URL=http://host:port （多条用换行或逗号分隔）\n"+
+				"2. Or in config.json: \"proxy-url\": \"http://host:port\" （多条用换行分隔或写成数组）",
+			err,
+		)
+	}
+	proxyURL := ""
+	if len(proxyURLs) > 0 {
+		proxyURL = proxyURLs[0]
 	}
 
 	chatCompletionsEnabled := true
@@ -158,6 +163,7 @@ func loadSettings(baseDir string) (*AppSettings, error) {
 	return &AppSettings{
 		AuthKey:                      authKey,
 		ProxyURL:                     proxyURL,
+		ProxyURLs:                    proxyURLs,
 		ChatCompletionsEnabled:       chatCompletionsEnabled,
 		InsecureSkipVerify:           insecureSkipVerify,
 		Host:                         "0.0.0.0",
@@ -231,6 +237,53 @@ func validateProxyURL(raw string) error {
 	return nil
 }
 
+// proxyRawToString 把 config.json 里的 proxy-url（可能是字符串或数组）归一为字符串，
+// 多条以换行分隔，供 parseProxyList 统一解析。
+func proxyRawToString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case []any:
+		var parts []string
+		for _, item := range val {
+			s := strings.TrimSpace(fmt.Sprintf("%v", item))
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+// parseProxyList 把原始字符串按换行/逗号拆分为多条代理地址，逐条校验并去重。
+func parseProxyList(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	})
+	var urls []string
+	seen := make(map[string]bool)
+	for _, f := range fields {
+		u := strings.TrimSpace(f)
+		if u == "" || seen[u] {
+			continue
+		}
+		if err := validateProxyURL(u); err != nil {
+			return nil, fmt.Errorf("%q: %w", u, err)
+		}
+		seen[u] = true
+		urls = append(urls, u)
+	}
+	return urls, nil
+}
+
+var proxyRotation uint64
+
 func GetProxySettings() (bool, string) {
 	configMu.Lock()
 	defer configMu.Unlock()
@@ -240,6 +293,38 @@ func GetProxySettings() (bool, string) {
 	}
 	proxyURL := strings.TrimSpace(Config.ProxyURL)
 	return proxyURL != "", proxyURL
+}
+
+// GetProxyURLs 返回配置的全部代理地址（副本）。
+func GetProxyURLs() []string {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if Config == nil || len(Config.ProxyURLs) == 0 {
+		return nil
+	}
+	out := make([]string, len(Config.ProxyURLs))
+	copy(out, Config.ProxyURLs)
+	return out
+}
+
+// GetNextProxyURL 轮询返回下一条代理地址；未配置时返回空串。
+func GetNextProxyURL() string {
+	configMu.Lock()
+	if Config == nil || len(Config.ProxyURLs) == 0 {
+		configMu.Unlock()
+		return ""
+	}
+	urls := Config.ProxyURLs
+	if len(urls) == 1 {
+		u := urls[0]
+		configMu.Unlock()
+		return u
+	}
+	picked := make([]string, len(urls))
+	copy(picked, urls)
+	configMu.Unlock()
+	i := atomic.AddUint64(&proxyRotation, 1)
+	return picked[(i-1)%uint64(len(picked))]
 }
 
 func GetChatCompletionsEnabled() bool {
@@ -311,7 +396,18 @@ func UpdateImagePollTimeoutSecs(seconds int) error {
 	return nil
 }
 
+// UpdateProxyURL 更新代理地址；入参可为单条或多条（换行/逗号分隔）。
 func UpdateProxyURL(proxyURL string) error {
+	urls, err := parseProxyList(proxyURL)
+	if err != nil {
+		return err
+	}
+	return UpdateProxyURLs(urls)
+}
+
+// UpdateProxyURLs 用一组代理地址覆盖配置并持久化。config.json 里：0 条删除、1 条存
+// 字符串、多条存数组，保持向后兼容。
+func UpdateProxyURLs(urls []string) error {
 	configMu.Lock()
 	defer configMu.Unlock()
 
@@ -319,19 +415,36 @@ func UpdateProxyURL(proxyURL string) error {
 		return fmt.Errorf("config is not initialized")
 	}
 
-	proxyURL = strings.TrimSpace(proxyURL)
-	if err := validateProxyURL(proxyURL); err != nil {
-		return err
+	// 逐条校验 + 去重
+	cleaned := make([]string, 0, len(urls))
+	seen := make(map[string]bool)
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u == "" || seen[u] {
+			continue
+		}
+		if err := validateProxyURL(u); err != nil {
+			return fmt.Errorf("%q: %w", u, err)
+		}
+		seen[u] = true
+		cleaned = append(cleaned, u)
 	}
 
 	rawConfig, err := readRawConfig(Config.ConfigFile)
 	if err != nil {
 		return err
 	}
-	if proxyURL == "" {
+	switch len(cleaned) {
+	case 0:
 		delete(rawConfig, "proxy-url")
-	} else {
-		rawConfig["proxy-url"] = proxyURL
+	case 1:
+		rawConfig["proxy-url"] = cleaned[0]
+	default:
+		arr := make([]any, len(cleaned))
+		for i, u := range cleaned {
+			arr[i] = u
+		}
+		rawConfig["proxy-url"] = arr
 	}
 
 	data, err := json.MarshalIndent(rawConfig, "", "  ")
@@ -342,7 +455,12 @@ func UpdateProxyURL(proxyURL string) error {
 		return fmt.Errorf("failed to write config.json: %w", err)
 	}
 
-	Config.ProxyURL = proxyURL
+	Config.ProxyURLs = cleaned
+	if len(cleaned) > 0 {
+		Config.ProxyURL = cleaned[0]
+	} else {
+		Config.ProxyURL = ""
+	}
 	return nil
 }
 

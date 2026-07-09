@@ -2,14 +2,16 @@ package services
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"chatgpt2api-go/config"
 )
 
 type ProxySettings struct {
-	Enabled bool   `json:"enabled"`
-	URL     string `json:"url"`
+	Enabled bool     `json:"enabled"`
+	URL     string   `json:"url"`  // 兼容旧前端：第一条代理
+	URLs    []string `json:"urls"` // 全部代理地址
 }
 
 type ProxyTestResult struct {
@@ -20,18 +22,32 @@ type ProxyTestResult struct {
 }
 
 func GetProxySettings() ProxySettings {
-	enabled, proxyURL := config.GetProxySettings()
+	urls := config.GetProxyURLs()
+	first := ""
+	if len(urls) > 0 {
+		first = urls[0]
+	}
 	return ProxySettings{
-		Enabled: enabled,
-		URL:     proxyURL,
+		Enabled: len(urls) > 0,
+		URL:     first,
+		URLs:    urls,
 	}
 }
 
-func UpdateProxySettings(enabled *bool, proxyURL string) (ProxySettings, error) {
+// UpdateProxySettings 更新代理。urls 为空时回退到 url（单条/多行）；enabled=false 表示清空。
+func UpdateProxySettings(enabled *bool, urls []string, urlFallback string) (ProxySettings, error) {
 	if enabled != nil && !*enabled {
-		proxyURL = ""
+		urls = nil
+		urlFallback = ""
 	}
-	if err := config.UpdateProxyURL(proxyURL); err != nil {
+	if len(urls) == 0 && strings.TrimSpace(urlFallback) != "" {
+		// 兼容旧前端只传单个 url（可能是多行）
+		if err := config.UpdateProxyURL(urlFallback); err != nil {
+			return ProxySettings{}, err
+		}
+		return GetProxySettings(), nil
+	}
+	if err := config.UpdateProxyURLs(urls); err != nil {
 		return ProxySettings{}, err
 	}
 	return GetProxySettings(), nil

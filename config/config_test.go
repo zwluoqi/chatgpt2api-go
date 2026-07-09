@@ -203,3 +203,52 @@ func TestLoadSettingsInsecureSkipVerifyEnvOverride(t *testing.T) {
 		t.Error("InsecureSkipVerify = false, want true")
 	}
 }
+
+func TestParseProxyList(t *testing.T) {
+	// 单条
+	urls, err := parseProxyList("http://127.0.0.1:7890")
+	if err != nil || len(urls) != 1 || urls[0] != "http://127.0.0.1:7890" {
+		t.Fatalf("单条解析错误: %v %v", urls, err)
+	}
+	// 多条（换行+逗号+去重）
+	urls, err = parseProxyList("http://a:1\nsocks5://b:2, http://a:1\n;https://c:3")
+	if err != nil {
+		t.Fatalf("多条解析错误: %v", err)
+	}
+	if len(urls) != 3 {
+		t.Fatalf("应为3条(去重后), got %v", urls)
+	}
+	// 非法条目报错
+	if _, err := parseProxyList("http://ok:1\nnotaurl"); err == nil {
+		t.Error("非法代理应报错")
+	}
+	// 空
+	if urls, _ := parseProxyList("  \n , "); len(urls) != 0 {
+		t.Errorf("空输入应为0条, got %v", urls)
+	}
+}
+
+func TestLoadSettingsMultiProxyArray(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "config.json")
+	os.WriteFile(configFile, []byte(`{"auth-key":"k","proxy-url":["http://a:1","socks5://b:2"]}`), 0o644)
+	cfg, err := loadSettings(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ProxyURLs) != 2 || cfg.ProxyURL != "http://a:1" {
+		t.Fatalf("数组多代理解析错误: %+v", cfg.ProxyURLs)
+	}
+}
+
+func TestGetNextProxyURLRoundRobin(t *testing.T) {
+	Config = &AppSettings{ProxyURLs: []string{"http://a:1", "http://b:2", "http://c:3"}}
+	defer func() { Config = nil }()
+	got := map[string]int{}
+	for i := 0; i < 6; i++ {
+		got[GetNextProxyURL()]++
+	}
+	if len(got) != 3 || got["http://a:1"] != 2 || got["http://b:2"] != 2 || got["http://c:3"] != 2 {
+		t.Errorf("轮询分布不均: %v", got)
+	}
+}

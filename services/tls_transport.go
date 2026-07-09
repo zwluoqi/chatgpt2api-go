@@ -256,8 +256,6 @@ func truncateStr(s string, maxLen int) string {
 }
 
 func getConfiguredProxyURL() string {
-	if config.Config == nil {
-		return ""
-	}
-	return strings.TrimSpace(config.Config.ProxyURL)
+	// 多条代理时轮询选取，实现出站流量分摊。
+	return config.GetNextProxyURL()
 }
