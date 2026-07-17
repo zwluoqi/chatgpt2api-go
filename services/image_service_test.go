@@ -117,9 +117,10 @@ func TestExtractConversationStateSkipped(t *testing.T) {
 	if len(st.FileIDs) != 0 || st.PendingImage {
 		t.Fatalf("skip 场景不应有图片/挂起任务, got %+v", st)
 	}
-	// 旧端点下 skipped_mainline 是终态，应据此提前停止轮询。
-	if shouldContinuePolling(st) {
-		t.Error("skipped_mainline 且无挂起任务应停止轮询")
+	// skipped_mainline 不是终态：实测其后 ~7s 图片仍会产出，故必须继续轮询，
+	// 否则会误杀本可成功的请求。
+	if !shouldContinuePolling(st) {
+		t.Error("skipped_mainline 不应终止轮询（图片可能随后产出）")
 	}
 }
 
@@ -155,6 +156,48 @@ func TestStalledImageDispatchDetection(t *testing.T) {
 	mapping := map[string]any{"tool": stalledLeaf}
 	if st := extractConversationState(mapping); !st.DispatchStalled {
 		t.Error("应检测到 DispatchStalled")
+	}
+}
+
+// 回归测试：实测 skip 与 stall 的结构差异——skip 无 is_complete(中间态, 随后会出图)，
+// stall 有 is_complete/finish_details 且状态冻结(终态)。绝不能把 skip 当终态。
+func TestSkipVsStallDistinction(t *testing.T) {
+	// skip 叶子：无 is_complete / finish_details（实测 t=6s 的真实形态）
+	skipLeaf := map[string]any{
+		"children": []any{},
+		"message": map[string]any{
+			"author":    map[string]any{"role": "assistant"},
+			"recipient": "t2uay3k.sj1i4kz",
+			"content":   map[string]any{"content_type": "code", "text": `{"skipped_mainline":true}`},
+			"metadata":  map[string]any{},
+		},
+	}
+	if isStalledImageDispatch(skipLeaf) {
+		t.Error("skip(无 is_complete) 不应被判为 stalled —— 否则会误杀随后出图的请求")
+	}
+	st := extractConversationState(map[string]any{"n": skipLeaf})
+	if !st.SkippedImage {
+		t.Error("应识别到 SkippedImage(仅作信息, 不作终止)")
+	}
+	if st.DispatchStalled {
+		t.Error("skip 不应置 DispatchStalled")
+	}
+	if !shouldContinuePolling(st) {
+		t.Error("skip 必须继续轮询(实测 ~7s 后图片会产出)")
+	}
+
+	// stall 叶子：有 is_complete + finish_details（实测 15 分钟冻结不出图）
+	stallLeaf := map[string]any{
+		"children": []any{},
+		"message": map[string]any{
+			"author":    map[string]any{"role": "assistant"},
+			"recipient": "t2uay3k.sj1i4kz",
+			"content":   map[string]any{"content_type": "code", "text": `{"size":"1536x864","prompt":null}`},
+			"metadata":  map[string]any{"is_complete": true, "finish_details": map[string]any{"type": "stop"}},
+		},
+	}
+	if !isStalledImageDispatch(stallLeaf) {
+		t.Error("stall(is_complete+finish_details) 应被判为 stalled")
 	}
 }
 

@@ -1038,11 +1038,10 @@ func shouldContinuePolling(result sseResult) bool {
 	if result.TurnComplete && !result.PendingImage {
 		return false
 	}
-	// 旧端点下 skipped_mainline 是明确的“不出图”终态（模型自述跳过），无挂起任务时
-	// 立即结束，避免干等超时。FileIDs 命中优先，成功出图不受影响。
-	if result.SkippedImage && !result.PendingImage {
-		return false
-	}
+	// 注意：skipped_mainline 不是终态！实测它常在 ~6s 出现、~13s 后图片仍会作为子节点
+	// 产出（skip 消息此时无 is_complete/finish_details，只是中间态）。据此提前失败会把
+	// 本可成功的请求误杀（曾导致线上大面积 upstream_skipped_image），故绝不能据它终止。
+	// 真正的终态是 DispatchStalled（is_complete/stop 的叶子调用且状态冻结），单独处理。
 	return true
 }
 
@@ -1639,14 +1638,6 @@ func GenerateImageResult(accountService *AccountService, accessToken, prompt, mo
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
-		if state.SkippedImage && responseText == "" {
-			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
-			return nil, &ImageGenerationError{
-				Message: "上游跳过了图片生成（skipped_mainline），疑似官方图片服务异常，请稍后重试",
-				Reason:  "upstream_skipped_image",
-				Meta:    meta,
-			}
-		}
 		if state.DispatchStalled && responseText == "" {
 			fmt.Printf("[image-upstream] stalled token=%s... error=upstream dispatched image but produced none (flaky service)\n", tokenPrefix)
 			return nil, &ImageGenerationError{
@@ -1869,14 +1860,6 @@ func EditImageResult(accountService *AccountService, accessToken, prompt string,
 	responseText := strings.TrimSpace(state.Text)
 	if len(fileIDs) == 0 {
 		meta := buildImageErrorMeta(state, waitedForResult, waitedWhileQueued)
-		if state.SkippedImage && responseText == "" {
-			fmt.Printf("[image-upstream] skipped token=%s... error=upstream skipped image generation (skipped_mainline)\n", tokenPrefix)
-			return nil, &ImageGenerationError{
-				Message: "上游跳过了图片生成（skipped_mainline），疑似官方图片服务异常，请稍后重试",
-				Reason:  "upstream_skipped_image",
-				Meta:    meta,
-			}
-		}
 		if state.DispatchStalled && responseText == "" {
 			fmt.Printf("[image-upstream] stalled token=%s... error=upstream dispatched image but produced none (flaky service)\n", tokenPrefix)
 			return nil, &ImageGenerationError{
